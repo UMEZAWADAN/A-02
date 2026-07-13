@@ -1,0 +1,96 @@
+*{
+
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:"Yu Gothic";
+
+}
+
+body{
+
+    background:#00b14f;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    height:100vh;
+
+}
+
+.login-box{
+
+    width:400px;
+
+    background:white;
+
+    border-radius:15px;
+
+    padding:40px;
+
+    box-shadow:0 10px 25px rgba(0,0,0,.25);
+
+}
+
+h1{
+
+    text-align:center;
+
+    margin-bottom:40px;
+
+    color:#00b14f;
+
+}
+
+label{
+
+    display:block;
+
+    margin-top:20px;
+
+    margin-bottom:8px;
+
+}
+
+input{
+
+    width:100%;
+
+    padding:12px;
+
+    border:1px solid #ccc;
+
+    border-radius:8px;
+
+}
+
+button{
+
+    width:100%;
+
+    margin-top:30px;
+
+    padding:15px;
+
+    border:none;
+
+    background:#00b14f;
+
+    color:white;
+
+    font-size:18px;
+
+    border-radius:8px;
+
+    cursor:pointer;
+
+}
+
+button:hover{
+
+    background:#009944;
+
+}

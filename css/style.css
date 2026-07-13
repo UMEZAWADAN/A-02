@@ -1,0 +1,156 @@
+*{
+
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:"Yu Gothic";
+
+}
+
+body{
+
+    display:flex;
+    background:#f4f6f9;
+
+}
+
+.sidebar{
+
+    width:250px;
+    height:100vh;
+    background:#00b14f;
+    color:white;
+
+}
+
+.sidebar h2{
+
+    text-align:center;
+    padding:30px 0;
+    border-bottom:1px solid rgba(255,255,255,.3);
+
+}
+
+.sidebar ul{
+
+    list-style:none;
+
+}
+
+.sidebar li{
+
+    border-bottom:1px solid rgba(255,255,255,.15);
+
+}
+
+.sidebar a{
+
+    display:block;
+    color:white;
+    text-decoration:none;
+    padding:18px 25px;
+
+}
+
+.sidebar li:hover{
+
+    background:#009845;
+
+}
+
+.active{
+
+    background:#00863d;
+
+}
+
+.main{
+
+    flex:1;
+    padding:30px;
+
+}
+
+header{
+
+    margin-bottom:30px;
+
+}
+
+.cards{
+
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:20px;
+
+}
+
+.card{
+
+    background:white;
+    border-radius:10px;
+    padding:25px;
+    text-align:center;
+    box-shadow:0 3px 10px rgba(0,0,0,.1);
+
+}
+
+.card h3{
+
+    color:#555;
+
+}
+
+.number{
+
+    margin-top:15px;
+    font-size:40px;
+    color:#00b14f;
+    font-weight:bold;
+
+}
+
+.table-box{
+
+    margin-top:40px;
+    background:white;
+    padding:20px;
+    border-radius:10px;
+    box-shadow:0 3px 10px rgba(0,0,0,.1);
+
+}
+
+.table-box h2{
+
+    margin-bottom:20px;
+
+}
+
+table{
+
+    width:100%;
+    border-collapse:collapse;
+
+}
+
+th{
+
+    background:#00b14f;
+    color:white;
+    padding:15px;
+
+}
+
+td{
+
+    padding:15px;
+    border-bottom:1px solid #ddd;
+
+}
+
+.danger{
+
+    color:red;
+    font-weight:bold;
+
+}

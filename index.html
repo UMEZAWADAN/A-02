@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+
+    <meta charset="UTF-8">
+    <title>運営状況管理</title>
+
+    <link rel="stylesheet" href="css/style.css">
+
+</head>
+
+<body>
+
+<div class="sidebar">
+
+    <h2>chocoZAP</h2>
+
+    <ul>
+
+        <li class="active">
+            <a href="dashboard.html">運営状況管理</a>
+        </li>
+
+        <li>
+            <a href="monitor.html">監視結果</a>
+        </li>
+
+        <li>
+            <a href="violation.html">違反確認</a>
+        </li>
+
+        <li>
+            <a href="notification.html">通知管理</a>
+        </li>
+
+        <li>
+            <a href="score.html">スコア・履歴管理</a>
+        </li>
+
+    </ul>
+
+</div>
+
+<div class="main">
+
+    <header>
+
+        <h1>運営状況管理（ダッシュボード）</h1>
+
+    </header>
+
+    <section class="cards">
+
+        <div class="card">
+
+            <h3>本日の違反件数</h3>
+
+            <p class="number">12</p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>共連れ</h3>
+
+            <p class="number">4</p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>長時間占有</h3>
+
+            <p class="number">5</p>
+
+        </div>
+
+        <div class="card">
+
+            <h3>空予約</h3>
+
+            <p class="number">3</p>
+
+        </div>
+
+    </section>
+
+    <section class="table-box">
+
+        <h2>未対応一覧</h2>
+
+        <table>
+
+            <tr>
+
+                <th>時刻</th>
+                <th>設備</th>
+                <th>違反内容</th>
+                <th>状態</th>
+
+            </tr>
+
+            <tr>
+
+                <td>13:25</td>
+                <td>セルフエステ</td>
+                <td>共連れ</td>
+                <td><span class="danger">未対応</span></td>
+
+            </tr>
+
+            <tr>
+
+                <td>15:40</td>
+                <td>ゴルフ</td>
+                <td>長時間占有</td>
+                <td><span class="danger">未対応</span></td>
+
+            </tr>
+
+            <tr>
+
+                <td>18:10</td>
+                <td>トレーニング</td>
+                <td>空予約</td>
+                <td><span class="danger">未対応</span></td>
+
+            </tr>
+
+        </table>
+
+    </section>
+
+</div>
+
+</body>
+
+</html>
