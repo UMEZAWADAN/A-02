@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+
+    <meta charset="UTF-8">
+    <title>違反確認・対応管理</title>
+
+    <link rel="stylesheet" href="../css/style.css">
+
+</head>
+
+<body>
+
+<div class="sidebar">
+
+    <h2>chocoZAP</h2>
+
+    <ul>
+
+        <li><a href="../index.html">運営状況管理</a></li>
+
+        <li><a href="monitoring.html">監視結果</a></li>
+
+        <li class="active">
+            <a href="violation.html">違反確認・対応管理</a>
+        </li>
+
+        <li><a href="notification.html">通知管理</a></li>
+
+        <li><a href="score.html">スコア・履歴管理</a></li>
+
+    </ul>
+
+</div>
+
+<div class="main">
+
+<h1>違反確認・対応管理</h1>
+
+<div class="table-box">
+
+<h2>違反一覧</h2>
+
+<table>
+
+<tr>
+
+<th>時刻</th>
+<th>設備</th>
+<th>違反内容</th>
+<th>状態</th>
+<th></th>
+
+</tr>
+
+<tr>
+
+<td>13:25</td>
+<td>セルフエステ</td>
+<td>共連れ</td>
+<td><span class="danger">未対応</span></td>
+
+<td>
+
+<button>詳細</button>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>15:40</td>
+<td>ゴルフ</td>
+<td>長時間占有</td>
+<td>対応中</td>
+
+<td>
+
+<button>詳細</button>
+
+</td>
+
+</tr>
+
+<tr>
+
+<td>17:20</td>
+<td>セルフエステ</td>
+<td>空予約</td>
+<td>対応済</td>
+
+<td>
+
+<button>詳細</button>
+
+</td>
+
+</tr>
+
+</table>
+
+</div>
+
+<div class="detail">
+
+<h2>違反詳細</h2>
+
+<div class="detail-box">
+
+<img src="../images/sample.jpg">
+
+<div class="info">
+
+<p><b>設備</b>：セルフエステ</p>
+
+<p><b>違反内容</b>：共連れ</p>
+
+<p><b>発生時刻</b>：13:25</p>
+
+<p><b>利用者ID</b>：A001</p>
+
+<label>
+
+状態
+
+</label>
+
+<select>
+
+<option>未対応</option>
+
+<option>対応中</option>
+
+<option>対応済</option>
+
+</select>
+
+<button>
+
+保存
+
+</button>
+
+</div>
+
+</div>
+
+</div>
+
+</div>
+
+</body>
+
+</html>
