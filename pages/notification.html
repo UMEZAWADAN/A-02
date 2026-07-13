@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+
+    <meta charset="UTF-8">
+    <title>通知管理</title>
+
+    <link rel="stylesheet" href="../css/style.css">
+
+</head>
+
+<body>
+
+<div class="sidebar">
+
+    <h2>chocoZAP</h2>
+
+    <ul>
+
+        <li><a href="../index.html">運営状況管理</a></li>
+
+        <li><a href="monitoring.html">監視結果</a></li>
+
+        <li><a href="violation.html">違反確認・対応管理</a></li>
+
+        <li class="active">
+            <a href="notification.html">通知管理</a>
+        </li>
+
+        <li><a href="score.html">スコア・履歴管理</a></li>
+
+    </ul>
+
+</div>
+
+<div class="main">
+
+<h1>通知管理</h1>
+
+<div class="cards">
+
+    <div class="card">
+
+        <h3>本日の通知件数</h3>
+
+        <p class="number">18</p>
+
+    </div>
+
+    <div class="card">
+
+        <h3>利用催促</h3>
+
+        <p class="number">7</p>
+
+    </div>
+
+    <div class="card">
+
+        <h3>終了前通知</h3>
+
+        <p class="number">8</p>
+
+    </div>
+
+    <div class="card">
+
+        <h3>警告通知</h3>
+
+        <p class="number">3</p>
+
+    </div>
+
+</div>
+
+<div class="table-box">
+
+<h2>通知履歴</h2>
+
+<table>
+
+<tr>
+
+<th>送信時刻</th>
+<th>通知種別</th>
+<th>送信先</th>
+<th>状態</th>
+
+</tr>
+
+<tr>
+
+<td>13:20</td>
+<td>利用催促</td>
+<td>A001</td>
+<td>送信済</td>
+
+</tr>
+
+<tr>
+
+<td>15:15</td>
+<td>終了前通知</td>
+<td>B004</td>
+<td>送信済</td>
+
+</tr>
+
+<tr>
+
+<td>18:30</td>
+<td>警告通知</td>
+<td>C011</td>
+<td>送信済</td>
+
+</tr>
+
+</table>
+
+</div>
+
+<div class="detail">
+
+<h2>通知送信</h2>
+
+<div class="form-box">
+
+<label>利用者ID</label>
+
+<input type="text" placeholder="A001">
+
+<label>通知種別</label>
+
+<select>
+
+<option>利用催促通知</option>
+
+<option>終了前通知</option>
+
+<option>警告通知</option>
+
+</select>
+
+<label>通知内容</label>
+
+<textarea rows="6">
+
+予約時間が開始しています。
+
+利用を開始してください。
+
+</textarea>
+
+<button>
+
+通知を送信
+
+</button>
+
+</div>
+
+</div>
+
+</div>
+
+</body>
+
+</html>

@@ -272,3 +272,59 @@ select{
     display:block;
 
 }
+
+
+
+.form-box{
+
+    background:white;
+
+    padding:25px;
+
+    border-radius:10px;
+
+    box-shadow:0 3px 10px rgba(0,0,0,.1);
+
+}
+
+.form-box label{
+
+    display:block;
+
+    margin-top:20px;
+
+    margin-bottom:8px;
+
+    font-weight:bold;
+
+}
+
+.form-box input,
+.form-box select,
+.form-box textarea{
+
+    width:100%;
+
+    padding:12px;
+
+    border:1px solid #ccc;
+
+    border-radius:6px;
+
+    font-size:15px;
+
+}
+
+.form-box textarea{
+
+    resize:none;
+
+}
+
+.form-box button{
+
+    margin-top:25px;
+
+    width:220px;
+
+}
