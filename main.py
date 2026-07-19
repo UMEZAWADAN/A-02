@@ -11,6 +11,12 @@ from queue import Queue
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
+
+# テンプレートエンジンの準備
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
 # =========================================================================
 # ⚙️ システム設定値（調整可能）
@@ -442,209 +448,9 @@ async def startup_event():
     asyncio.create_task(ws_broadcast_loop())
 
 @app.get("/", response_class=HTMLResponse)
-def get_dashboard():
-    # メンバーにそのまま引き渡せる、Tailwind CSS を採用した本格的なダークテーマ管理画面
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="ja">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>無人店舗 AI Security Dashboard</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-        <style>
-            @keyframes pulse-red {
-                0%, 100% { background-color: rgba(239, 68, 68, 0.15); }
-                50% { background-color: rgba(239, 68, 68, 0.4); }
-            }
-            .alert-active {
-                animation: pulse-red 1.5s infinite;
-                border-color: #ef4444 !important;
-            }
-        </style>
-    </head>
-    <body class="bg-gray-950 text-gray-100 min-h-screen font-sans">
-        
-        <!-- ヘッダー -->
-        <header class="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <i class="fa-solid fa-shield-halved text-lime-400 text-3xl"></i>
-                <h1 class="text-xl font-bold tracking-wider">AI無人店舗セキュリティシステム</h1>
-            </div>
-            <div class="flex items-center gap-2">
-                <span class="inline-block w-3 h-3 bg-green-500 rounded-full animate-ping"></span>
-                <span class="text-sm text-gray-400">システム常時監視中</span>
-            </div>
-        </header>
-
-        <!-- メイングリッド -->
-        <main class="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            <!-- 左・中：ライブモニター (2カラム分) -->
-            <div class="lg:col-span-2 flex flex-col gap-6">
-                
-                <!-- 入口ゲート -->
-                <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4">
-                    <div class="flex justify-between items-center mb-3">
-                        <h2 class="text-lg font-semibold flex items-center gap-2">
-                            <i class="fa-solid fa-door-open text-cyan-400"></i> エリア①：入口ゲート監視 (YOLO & QR)
-                        </h2>
-                        <span class="text-xs bg-cyan-950 text-cyan-400 px-2.5 py-1 rounded-full">カメラ01</span>
-                    </div>
-                    <div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-gray-800">
-                        <img src="/video/entrance" class="w-full h-full object-cover" alt="Entrance Camera Feed">
-                    </div>
-                </div>
-
-                <!-- トレーニングルーム -->
-                <div class="bg-gray-900 border border-gray-800 rounded-2xl p-4">
-                    <div class="flex justify-between items-center mb-3">
-                        <h2 class="text-lg font-semibold flex items-center gap-2">
-                            <i class="fa-solid fa-dumbbell text-lime-400"></i> エリア②：マシン占有監視 (Face & Timer)
-                        </h2>
-                        <span class="text-xs bg-lime-950 text-lime-400 px-2.5 py-1 rounded-full">カメラ02</span>
-                    </div>
-                    <div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-gray-800">
-                        <img src="/video/room" class="w-full h-full object-cover" alt="Room Camera Feed">
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- 右：ステータス＆コントロールパネル (1カラム分) -->
-            <div class="flex flex-col gap-6">
-                
-                <!-- 共連れアラートカード -->
-                <div id="alert_card" class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col items-center justify-center transition-all duration-300">
-                    <i id="alert_icon" class="fa-solid fa-triangle-exclamation text-gray-600 text-5xl mb-4"></i>
-                    <h3 id="alert_title" class="text-xl font-bold text-gray-400 mb-1">不正通行監視</h3>
-                    <p id="alert_desc" class="text-sm text-gray-500 text-center">異常は検知されていません</p>
-                </div>
-
-                <!-- リアルタイムカウンター数 -->
-                <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 grid grid-cols-2 gap-4">
-                    <div class="bg-gray-950 border border-gray-800 rounded-xl p-4 text-center">
-                        <span class="text-sm text-gray-400 block mb-1">館内入場数 (IN)</span>
-                        <strong id="val_in" class="text-4xl font-extrabold text-emerald-400">0</strong>
-                    </div>
-                    <div class="bg-gray-950 border border-gray-800 rounded-xl p-4 text-center">
-                        <span class="text-sm text-gray-400 block mb-1">退館数 (OUT)</span>
-                        <strong id="val_out" class="text-4xl font-extrabold text-rose-500">0</strong>
-                    </div>
-                </div>
-
-                <!-- 最後のQR認証ログ -->
-                <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-                    <h4 class="text-sm text-gray-400 mb-3 flex items-center gap-2">
-                        <i class="fa-solid fa-qrcode text-cyan-400"></i> 直近のQR読み取り
-                    </h4>
-                    <div class="bg-gray-950 border border-gray-800 rounded-xl p-4 flex justify-between items-center">
-                        <div>
-                            <span class="text-xs text-gray-500 block">会員ID</span>
-                            <strong id="val_qr" class="text-lg font-bold text-gray-200">None</strong>
-                        </div>
-                        <i class="fa-solid fa-circle-check text-emerald-500 text-xl"></i>
-                    </div>
-                </div>
-
-                <!-- 占有エリア状態 -->
-                <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-                    <h4 class="text-sm text-gray-400 mb-3 flex items-center gap-2">
-                        <i class="fa-solid fa-user-clock text-lime-400"></i> マシン占有状況
-                    </h4>
-                    <div class="bg-gray-950 border border-gray-800 rounded-xl p-4 flex flex-col gap-3">
-                        <div class="flex justify-between items-center">
-                            <span class="text-sm text-gray-300">利用中の会員:</span>
-                            <strong id="room_user" class="text-gray-100 font-semibold">Guest</strong>
-                        </div>
-                        <div class="flex justify-between items-center">
-                            <span class="text-sm text-gray-300">連続占有時間:</span>
-                            <strong id="room_time" class="text-lg font-bold text-lime-400">0 秒</strong>
-                        </div>
-                        <div class="w-full bg-gray-800 rounded-full h-2 overflow-hidden mt-1">
-                            <div id="time_progress" class="bg-lime-400 h-2 w-0 transition-all duration-300"></div>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-
-        </main>
-
-        <!-- リアルタイム通知WebSocketスクリプト -->
-        <script>
-            const ws = new WebSocket("ws://" + window.location.host + "/ws");
-            
-            // 警告用ビープ音
-            function playBeep() {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioCtx.createOscillator();
-                oscillator.type = 'sawtooth';
-                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
-                oscillator.connect(audioCtx.destination);
-                oscillator.start();
-                oscillator.stop(audioCtx.currentTime + 0.3);
-            }
-
-            let prevAlertState = false;
-
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-
-                // 各種ステータスの更新
-                document.getElementById("val_in").innerText = data.in_count;
-                document.getElementById("val_out").innerText = data.out_count;
-                document.getElementById("val_qr").innerText = data.last_qr;
-                document.getElementById("room_user").innerText = data.user_name;
-                document.getElementById("room_time").innerText = data.accumulated_time + " 秒";
-
-                // プログレスバーの更新 (制限10秒基準)
-                const percent = Math.min(100, (data.accumulated_time / 10.0) * 100);
-                const progressBar = document.getElementById("time_progress");
-                progressBar.style.width = percent + "%";
-
-                if (data.is_overtime) {
-                    progressBar.className = "bg-red-500 h-2 transition-all duration-300";
-                    document.getElementById("room_time").className = "text-lg font-bold text-red-500";
-                } else {
-                    progressBar.className = "bg-lime-400 h-2 transition-all duration-300";
-                    document.getElementById("room_time").className = "text-lg font-bold text-lime-400";
-                }
-
-                // 🚨 共連れアラート処理
-                const alertCard = document.getElementById("alert_card");
-                const alertIcon = document.getElementById("alert_icon");
-                const alertTitle = document.getElementById("alert_title");
-                const alertDesc = document.getElementById("alert_desc");
-
-                if (data.co_trailing_alert) {
-                    alertCard.classList.add("alert-active");
-                    alertIcon.className = "fa-solid fa-circle-exclamation text-red-500 text-5xl mb-4 animate-bounce";
-                    alertTitle.className = "text-xl font-bold text-red-500 mb-1";
-                    alertTitle.innerText = "🚨 共連れ不正入館！";
-                    alertDesc.innerText = "QR未認証者の侵入を検知しました。確認してください。";
-                    alertDesc.className = "text-sm text-red-300 text-center";
-                    
-                    if (!prevAlertState) {
-                        playBeep();
-                    }
-                    prevAlertState = true;
-                } else {
-                    alertCard.classList.remove("alert-active");
-                    alertIcon.className = "fa-solid fa-triangle-exclamation text-emerald-500 text-5xl mb-4";
-                    alertTitle.className = "text-xl font-bold text-emerald-400 mb-1";
-                    alertTitle.innerText = "監視状態：正常";
-                    alertDesc.innerText = "異常は検知されていません";
-                    alertDesc.className = "text-sm text-gray-500 text-center";
-                    prevAlertState = false;
-                }
-            };
-        </script>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content, status_code=200)
+def get_dashboard(request: Request):
+    # templatesフォルダ内の index.html を呼び出す
+    return templates.TemplateResponse("index.html", {"request": request})
 
 # =========================================================================
 # 🏁 統合Webサーバー & AI処理スレッドの同時起動
