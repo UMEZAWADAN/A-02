@@ -422,3 +422,67 @@ select{
     margin:20px 0 10px;
 
 }
+
+.table-header{
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    margin-bottom:20px;
+
+}
+
+.search-box input{
+
+    width:260px;
+
+    padding:10px;
+
+    border:1px solid #ccc;
+
+    border-radius:6px;
+
+}
+
+#sortSelect{
+
+    padding:10px;
+
+    border:1px solid #ccc;
+
+    border-radius:6px;
+
+}
+
+.pagination{
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    gap:20px;
+
+    margin-top:20px;
+
+}
+
+.pagination button{
+
+    padding:8px 15px;
+
+    border:none;
+
+    background:#00b14f;
+
+    color:white;
+
+    border-radius:6px;
+
+    cursor:pointer;
+
+}

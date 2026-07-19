@@ -72,16 +72,37 @@
 
 <div class="table-box">
 
-<h2>通知履歴</h2>
+<div class="table-header">
 
-<table>
+    <h2>通知履歴</h2>
+
+    <div class="search-box">
+
+        <input
+            type="text"
+            id="searchInput"
+            placeholder="利用者ID・通知種別で検索">
+
+    </div>
+
+    <select id="sortSelect">
+
+        <option value="new">新しい順</option>
+        <option value="old">古い順</option>
+
+</select>
+
+</div>
+
+<table id="notificationTable">
 
 <tr>
 
 <th>送信時刻</th>
 <th>通知種別</th>
-<th>送信先</th>
+<th>利用者ID</th>
 <th>状態</th>
+<th>詳細</th>
 
 </tr>
 
@@ -92,6 +113,23 @@
 <td>A001</td>
 <td>送信済</td>
 
+<td>
+
+<button
+class="detail-btn"
+
+data-user="A001"
+data-type="利用催促通知"
+data-time="2026/07/20 13:20"
+data-status="送信済"
+data-message="予約時間が開始しています。利用を開始してください。">
+
+詳細
+
+</button>
+
+</td>
+
 </tr>
 
 <tr>
@@ -100,6 +138,23 @@
 <td>終了前通知</td>
 <td>B004</td>
 <td>送信済</td>
+
+<td>
+
+<button
+class="detail-btn"
+
+data-user="B004"
+data-type="終了前通知"
+data-time="2026/07/20 15:15"
+data-status="送信済"
+data-message="まもなく利用終了です。ご準備をお願いします。">
+
+詳細
+
+</button>
+
+</td>
 
 </tr>
 
@@ -110,13 +165,38 @@
 <td>C011</td>
 <td>送信済</td>
 
+<td>
+
+<button
+class="detail-btn"
+
+data-user="C011"
+data-type="警告通知"
+data-time="2026/07/20 18:30"
+data-status="送信済"
+data-message="利用ルール違反を検知しました。ご確認ください。">
+
+詳細
+
+</button>
+
+</td>
+
 </tr>
 
 </table>
 
+<div class="pagination">
+
+    <button id="prevPage">← 前へ</button>
+
+    <span id="pageNumber">1</span>
+
+    <button id="nextPage">次へ →</button>
+
 </div>
 
-<div class="detail">
+</div>
 
 </button>
 
@@ -232,6 +312,43 @@
 </div>
 
 </div>
+
+</div>
+
+<div class="setting-modal" id="detailModal">
+
+    <div class="setting-box">
+
+        <h2>通知詳細</h2>
+
+        <p><strong>利用者ID：</strong><span id="detailUser"></span></p>
+
+        <p><strong>通知種別：</strong><span id="detailType"></span></p>
+
+        <p><strong>送信日時：</strong><span id="detailTime"></span></p>
+
+        <p><strong>送信結果：</strong><span id="detailStatus"></span></p>
+
+        <textarea id="detailMessage" rows="4" readonly></textarea>
+
+        <label>通知内容</label>
+
+        <textarea rows="4" readonly>
+予約時間が開始しています。
+利用を開始してください。
+        </textarea>
+
+        <div class="modal-buttons">
+
+            <button id="closeDetailBtn">
+
+                閉じる
+
+            </button>
+
+        </div>
+
+    </div>
 
 </div>
 
