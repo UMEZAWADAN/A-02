@@ -12,31 +12,27 @@
 
 <body>
 
-<div class="sidebar">
-
-    <h2>chocoZAP</h2>
-
-    <ul>
-
-        <li><a href="../index.html">運営状況管理</a></li>
-
-        <li><a href="monitoring.html">監視結果</a></li>
-
-        <li><a href="violation.html">違反確認・対応管理</a></li>
-
-        <li class="active">
-            <a href="notification.html">通知管理</a>
-        </li>
-
-        <li><a href="score-history.html">スコア・履歴管理</a></li>
-
-    </ul>
-
-</div>
+<div id="sidebar"></div>
 
 <div class="main">
 
-<h1>通知管理</h1>
+<div class="page-header">
+
+    <h1>通知管理</h1>
+
+    <div class="header-buttons">
+
+        <button id="refreshBtn">
+            🔄 更新
+        </button>
+
+        <button id="settingBtn">
+            ⚙ 通知設定
+        </button>
+
+    </div>
+
+</div>
 
 <div class="cards">
 
@@ -122,39 +118,114 @@
 
 <div class="detail">
 
-<h2>通知送信</h2>
+</button>
 
-<div class="form-box">
+</div>
+</div>
 
-<label>利用者ID</label>
+</div>
 
-<input type="text" placeholder="A001">
 
-<label>通知種別</label>
+<div class="setting-modal" id="settingModal">
 
-<select>
+<div class="setting-box">
 
-<option>利用催促通知</option>
 
-<option>終了前通知</option>
+<h2>通知設定</h2>
 
-<option>警告通知</option>
+<hr>
 
-</select>
+<h3>通知条件</h3>
 
-<label>通知内容</label>
+<label>
 
-<textarea rows="6">
+<input type="checkbox" checked>
 
-予約時間が開始しています。
+利用催促通知
 
-利用を開始してください。
+</label>
+
+<div class="setting-row">
+
+予約開始から
+
+<input type="number" value="5">
+
+分後
+
+</div>
+
+<label>
+
+<input type="checkbox" checked>
+
+終了前通知
+
+</label>
+
+<div class="setting-row">
+
+終了
+
+<input type="number" value="5">
+
+分前
+
+</div>
+
+<label>
+
+<input type="checkbox" checked>
+
+警告通知
+
+</label>
+
+<p>
+
+違反検知時に即時送信
+
+</p>
+
+<hr>
+
+<h3>通知テンプレート</h3>
+
+<label>利用催促通知</label>
+
+<textarea rows="3">
+
+予約時間が開始しています。利用を開始してください。
 
 </textarea>
 
+<label>終了前通知</label>
+
+<textarea rows="3">
+
+まもなく利用終了です。ご準備をお願いします。
+
+</textarea>
+
+<label>警告通知</label>
+
+<textarea rows="3">
+
+利用ルール違反を検知しました。ご確認ください。
+
+</textarea>
+
+<div class="modal-buttons">
+
 <button>
 
-通知を送信
+設定を保存
+
+</button>
+
+<button id="closeBtn">
+
+閉じる
 
 </button>
 
@@ -163,6 +234,9 @@
 </div>
 
 </div>
+
+<script src="../js/common.js"></script>
+<script src="../js/script.js"></script>
 
 </body>
 
