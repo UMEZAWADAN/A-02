@@ -21,6 +21,7 @@
             gap: 20px;
             justify-content: center;
             flex-wrap: wrap;
+            margin-bottom: 20px;
         }
         .panel {
             background: #fff;
@@ -36,6 +37,23 @@
             border-bottom: 2px solid #3498db;
             padding-bottom: 8px;
             color: #2980b9;
+        }
+        /* 履歴用の幅広パネル */
+        .panel-full {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            max-width: 980px;
+            margin: 0 auto;
+            box-sizing: border-box;
+        }
+        .panel-full h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            border-bottom: 2px solid #2ecc71;
+            padding-bottom: 8px;
+            color: #27ae60;
         }
         .video-box {
             text-align: center;
@@ -63,6 +81,33 @@
             width: 40%;
             color: #555;
         }
+        /* 履歴一覧用のテーブル */
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: center;
+        }
+        .history-table th, .history-table td {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            font-size: 0.9rem;
+        }
+        .history-table th {
+            background-color: #f8f9fa;
+            color: #555;
+        }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            color: white;
+        }
+        .badge-in { background-color: #27ae60; }
+        .badge-out { background-color: #7f8c8d; }
+        .badge-alert { background-color: #e74c3c; }
+        .badge-normal { background-color: #3498db; }
+
         .alert-box {
             background-color: #e74c3c;
             color: white;
@@ -93,7 +138,6 @@
         <div class="panel">
             <h2>🚪 入口ゲート (YOLO + QR)</h2>
             <div class="video-box">
-                <!-- 入口カメラの映像ストリーム -->
                 <img src="/video/entrance" alt="Entrance Stream">
             </div>
             <table class="status-table">
@@ -117,7 +161,6 @@
         <div class="panel">
             <h2>👤 トレーニングルーム (顔識別)</h2>
             <div class="video-box">
-                <!-- ルームカメラの映像ストリーム -->
                 <img src="/video/room" alt="Room Stream">
             </div>
             <table class="status-table">
@@ -137,8 +180,27 @@
         </div>
     </div>
 
+    <!-- 📋 直近の通行・違反履歴パネル -->
+    <div class="panel-full">
+        <h2>📋 直近の入退館・違反履歴 (リアルタイム)</h2>
+        <table class="history-table">
+            <thead>
+                <tr>
+                    <th>日時</th>
+                    <th>方向</th>
+                    <th>会員ID</th>
+                    <th>判定ステータス</th>
+                </tr>
+            </thead>
+            <tbody id="logs-table-body">
+                <tr>
+                    <td colspan="4" style="color: #888; padding: 15px;">データを待機中...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
     <script>
-        // WebSocketでバックエンドとリアルタイム通信
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
@@ -169,6 +231,31 @@
             } else {
                 statusTd.innerText = "通常";
                 statusTd.style.color = "#27ae60";
+            }
+
+            // 履歴テーブルの更新
+            if (data.logs && data.logs.length > 0) {
+                const tbody = document.getElementById('logs-table-body');
+                tbody.innerHTML = '';
+                data.logs.forEach(log => {
+                    const tr = document.createElement('tr');
+                    
+                    const dirBadge = log.direction === 'IN' 
+                        ? '<span class="badge badge-in">IN (入館)</span>' 
+                        : '<span class="badge badge-out">OUT (退館)</span>';
+
+                    const alertBadge = log.is_alert === 1 
+                        ? '<span class="badge badge-alert">🚨 共連れ・不正</span>' 
+                        : '<span class="badge badge-normal">正常通行</span>';
+
+                    tr.innerHTML = `
+                        <td>${log.timestamp}</td>
+                        <td>${dirBadge}</td>
+                        <td style="font-weight: bold;">${log.member_id}</td>
+                        <td>${alertBadge}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
             }
         };
 
