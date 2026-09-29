@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>ジム セキュリティ＆人流監視ダッシュボード</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f4f6f9;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .panel {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 480px;
+            box-sizing: border-box;
+        }
+        .panel h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 8px;
+            color: #2980b9;
+        }
+        .video-box {
+            text-align: center;
+            background: #000;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        .video-box img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .status-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .status-table th, .status-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #ddd;
+            text-align: left;
+            font-size: 0.95rem;
+        }
+        .status-table th {
+            width: 40%;
+            color: #555;
+        }
+        .alert-box {
+            background-color: #e74c3c;
+            color: white;
+            text-align: center;
+            padding: 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-top: 15px;
+            display: none;
+        }
+        .alert-box.active {
+            display: block;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🏋️‍♂️ ジム セキュリティ・人流監視ダッシュボード</h1>
+
+    <div class="container">
+        <!-- 入口ゲートパネル -->
+        <div class="panel">
+            <h2>🚪 入口ゲート (YOLO + QR)</h2>
+            <div class="video-box">
+                <!-- 入口カメラの映像ストリーム -->
+                <img src="/video/entrance" alt="Entrance Stream">
+            </div>
+            <table class="status-table">
+                <tr>
+                    <th>入館数 (IN)</th>
+                    <td id="in-count" style="color: #27ae60; font-weight: bold; font-size: 1.2rem;">0</td>
+                </tr>
+                <tr>
+                    <th>退館数 (OUT)</th>
+                    <td id="out-count" style="color: #c0392b; font-weight: bold; font-size: 1.2rem;">0</td>
+                </tr>
+                <tr>
+                    <th>直近のQR</th>
+                    <td id="last-qr">None</td>
+                </tr>
+            </table>
+            <div id="co-trailing-alert" class="alert-box">🚨 共連れ（不正入館）検知アラート！</div>
+        </div>
+
+        <!-- トレーニングルームパネル -->
+        <div class="panel">
+            <h2>👤 トレーニングルーム (顔識別)</h2>
+            <div class="video-box">
+                <!-- ルームカメラの映像ストリーム -->
+                <img src="/video/room" alt="Room Stream">
+            </div>
+            <table class="status-table">
+                <tr>
+                    <th>追跡中ユーザー</th>
+                    <td id="user-name">Guest</td>
+                </tr>
+                <tr>
+                    <th>滞在時間</th>
+                    <td id="accumulated-time">0 秒</td>
+                </tr>
+                <tr>
+                    <th>ステータス</th>
+                    <td id="overtime-status" style="font-weight: bold;">通常</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // WebSocketでバックエンドとリアルタイム通信
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            // 入口データの更新
+            document.getElementById('in-count').innerText = data.in_count;
+            document.getElementById('out-count').innerText = data.out_count;
+            document.getElementById('last-qr').innerText = data.last_qr;
+
+            // 共連れアラートの切り替え
+            const alertBox = document.getElementById('co-trailing-alert');
+            if (data.co_trailing_alert) {
+                alertBox.classList.add('active');
+            } else {
+                alertBox.classList.remove('active');
+            }
+
+            // ルームデータの更新
+            document.getElementById('user-name').innerText = data.user_name;
+            document.getElementById('accumulated-time').innerText = data.accumulated_time + ' 秒';
+
+            const statusTd = document.getElementById('overtime-status');
+            if (data.is_overtime) {
+                statusTd.innerText = "オーバータイム（制限超過）";
+                statusTd.style.color = "#e74c3c";
+            } else {
+                statusTd.innerText = "通常";
+                statusTd.style.color = "#27ae60";
+            }
+        };
+
+        ws.onclose = function() {
+            console.log("WebSocket接続が切れました。ページを再読み込みしてください。");
+        };
+    </script>
+
+</body>
+</html>
