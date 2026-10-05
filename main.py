@@ -485,8 +485,29 @@ def generate_stream():
         time.sleep(0.04)
 
 @app.get("/video")
-def video_feed():
-    return StreamingResponse(generate_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+async def video_feed():
+    async def generate_async_stream():
+        while True:
+            with render_lock:
+                frame_to_send = current_output_frame
+            if frame_to_send is not None:
+                ret, buffer = cv2.imencode('.jpg', frame_to_send)
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            # 非同期で少し待機し、CPU負荷を下げつつ次のフレームへ
+            await asyncio.sleep(0.04)
+
+    return StreamingResponse(
+        generate_async_stream(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Connection": "close"  # 👈 ここがポイント：切断時にコネクションを強制終了させる
+        }
+    )
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
