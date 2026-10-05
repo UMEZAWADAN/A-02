@@ -2,115 +2,315 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>入退館・セキュリティログ - ジム管理ダッシュボード</title>
+    <title>ACCESS LOGS - CHOCOZAP SECURITY</title>
     <style>
-        body {
-            font-family: 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f4f6f9;
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --accent-lime-dark: #b5d432;
+            --danger-color: #ff2a5f;
+        }
+
+        /* ページ全体を縦方向のFlexboxにしてフッターを底に沈める */
+        html, body {
+            height: 100%;
             margin: 0;
-            padding: 20px;
-            color: #333;
         }
-        h1 {
-            text-align: center;
-            color: #2c3e50;
-            margin-bottom: 20px;
-        }
-        .nav-links {
-            text-align: center;
-            margin-bottom: 20px;
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-        }
-        .nav-links a {
-            background-color: #34495e;
-            color: white;
-            padding: 8px 16px;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 0.9rem;
-            font-weight: bold;
-        }
-        .nav-links a:hover {
-            background-color: #2c3e50;
-        }
-        .panel {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 900px;
-            margin: 0 auto;
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding-top: 160px; /* 固定ヘッダー分の余白 */
+            padding-left: 20px;
+            padding-right: 20px;
             box-sizing: border-box;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
+            
+            display: flex;
+            flex-direction: column;
         }
-        .panel h2 {
+
+        /* メインコンテンツが少なくてもフッターを押し下げるラッパー */
+        .page-content {
+            flex: 1;
+        }
+
+        /* 共通のリキッドグラスヘッダー */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .nav-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+        .nav-btn:hover::after {
+            background-color: var(--accent-lime);
+        }
+
+        /* 共通パネル・テーブル */
+        .cyber-panel-full {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 24px;
+            max-width: 1024px;
+            margin: 0 auto 40px auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .cyber-panel-full h2 {
             margin-top: 0;
-            font-size: 1.2rem;
-            border-bottom: 2px solid #2ecc71;
-            padding-bottom: 8px;
-            color: #27ae60;
+            font-size: 0.9rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-main);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: monospace;
         }
-        .logs-table {
+
+        .cyber-table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 10px;
         }
-        .logs-table th, .logs-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #ddd;
+        .cyber-table th, .cyber-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9rem;
             text-align: left;
-            font-size: 0.95rem;
         }
-        .logs-table th {
-            background-color: #f8f9fa;
-            color: #555;
+        .cyber-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
             text-align: center;
+            font-weight: 800;
         }
-        .logs-table td {
+        .cyber-table td {
             text-align: center;
+            color: var(--text-main);
         }
+
+        /* ステータスバッジのデザイン調整 */
         .badge {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            color: white;
+            padding: 3px 10px;
+            border-radius: 50px;
+            font-size: 0.7rem;
+            font-weight: 800;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-block;
         }
-        .badge-in { background-color: #27ae60; }
-        .badge-out { background-color: #7f8c8d; }
-        .badge-alert { background-color: #e74c3c; }
-        .badge-normal { background-color: #3498db; }
+        .badge-in { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
+        .badge-out { background: var(--surface-alt); color: var(--text-muted); border: 1px solid var(--border-color); }
+        .badge-alert { background: #ffe6eb; color: var(--danger-color); border: 1px solid #ffadb8; border-radius: 2px; }
+        .badge-normal { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
+
+        /* 共通フッター＆ティッカー */
+        .site-footer {
+            background: var(--surface-card);
+            border-top: 1px solid var(--border-color);
+            margin-top: auto;
+            padding: 30px 20px;
+            box-sizing: border-box;
+            width: 100%;
+            margin-left: -20px;
+            padding-left: calc(20px + 20px);
+            padding-right: calc(20px + 20px);
+        }
+
+        .ticker-wrap {
+            width: 100%;
+            overflow: hidden;
+            background: var(--surface-alt);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+            white-space: nowrap;
+            box-sizing: border-box;
+            font-family: monospace;
+            font-size: 0.75rem;
+            font-weight: 800;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 30px;
+        }
+
+        .ticker-move {
+            display: inline-block;
+            animation: marquee 25s linear infinite;
+        }
+
+        .ticker-item {
+            display: inline-block;
+            padding: 0 30px;
+        }
+
+        .ticker-item span {
+            color: var(--text-main);
+            background: var(--accent-lime);
+            padding: 1px 6px;
+            border-radius: 2px;
+            margin-left: 6px;
+        }
+
+        @keyframes marquee {
+            0% { transform: translate3d(0, 0, 0); }
+            100% { transform: translate3d(-50%, 0, 0); }
+        }
+
+        .footer-content {
+            max-width: 1024px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .footer-brand-mini {
+            font-weight: 900;
+            color: var(--text-main);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
     </style>
 </head>
 <body>
 
-    <h1>📋 入退館・セキュリティ履歴一覧</h1>
-    
-    <div class="nav-links">
-        <a href="/">← ライブ監視ダッシュボードへ戻る</a>
-        <a href="/admin/members">👥 会員管理画面へ</a>
+    <header class="site-header">
+        <div class="header-brand">
+            <h1>CHOCOZAP SECURITY</h1>
+        </div>
+        <nav class="nav-container">
+            <a href="/" class="nav-btn">&larr; LIVE MONITOR</a>
+            <a href="/admin/members" class="nav-btn">MEMBER MANAGEMENT</a>
+        </nav>
+    </header>
+
+    <div class="page-content">
+        <div class="cyber-panel-full" style="margin-top: 20px;">
+            <h2>ACCESS & SECURITY LOGS (LAST 100)</h2>
+            <table class="cyber-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Timestamp</th>
+                        <th>Direction</th>
+                        <th>Member ID</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-table-body">
+                    <tr>
+                        <td colspan="5" style="color: var(--text-muted); padding: 20px;">WAITING FOR DATA STREAM...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
-    <div class="panel">
-        <h2>過去の通行ログ (最新100件)</h2>
-        <table class="logs-table">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>日時</th>
-                    <th>方向</th>
-                    <th>会員ID</th>
-                    <th>判定ステータス</th>
-                </tr>
-            </thead>
-            <tbody id="logs-table-body">
-                <tr>
-                    <td colspan="5" style="color: #888; padding: 20px;">読み込み中...</td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
+    <footer class="site-footer">
+        <div class="ticker-wrap">
+            <div class="ticker-move">
+                <div class="ticker-item">AUDIT STREAM: <span>RECORDING</span></div>
+                <div class="ticker-item">SECURITY MONITOR: <span>ACTIVE</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">AUDIT STREAM: <span>RECORDING</span></div>
+                <div class="ticker-item">SECURITY MONITOR: <span>ACTIVE</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+            </div>
+        </div>
+        <div class="footer-content">
+            <div class="footer-brand-mini">CHOCOZAP SECURITY COMMAND CENTER</div>
+            <div>&copy; 2026 CHOCOZAP SECURITY // ALL RIGHTS RESERVED.</div>
+        </div>
+    </footer>
 
     <script>
         async function fetchLogs() {
@@ -121,24 +321,24 @@
                 tbody.innerHTML = '';
 
                 if (data.logs.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" style="color: #888; padding: 20px;">記録されているログはありません。</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="5" style="color: var(--text-muted); padding: 20px;">記録されているログはありません。</td></tr>`;
                     return;
                 }
 
                 data.logs.forEach(log => {
                     const tr = document.createElement('tr');
                     const dirBadge = log.direction === 'IN' 
-                        ? '<span class="badge badge-in">IN (入館)</span>' 
-                        : '<span class="badge badge-out">OUT (退館)</span>';
+                        ? '<span class="badge badge-in">IN</span>' 
+                        : '<span class="badge badge-out">OUT</span>';
                     const alertBadge = log.is_alert === 1 
-                        ? '<span class="badge badge-alert">🚨 共連れ・不正</span>' 
-                        : '<span class="badge badge-normal">正常通行</span>';
+                        ? '<span class="badge badge-alert">ALERT</span>' 
+                        : '<span class="badge badge-normal">NORMAL</span>';
 
                     tr.innerHTML = `
-                        <td style="color: #666;">${log.id}</td>
-                        <td>${log.timestamp}</td>
+                        <td style="color: var(--text-muted); font-family: monospace;">${log.id}</td>
+                        <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${log.timestamp}</td>
                         <td>${dirBadge}</td>
-                        <td style="font-family: monospace; font-weight: bold;">${log.member_id}</td>
+                        <td style="font-family: monospace; font-weight: 700;">${log.member_id}</td>
                         <td>${alertBadge}</td>
                     `;
                     tbody.appendChild(tr);
@@ -148,7 +348,6 @@
             }
         }
 
-        // ページ読み込み時にログを取得
         fetchLogs();
     </script>
 </body>
