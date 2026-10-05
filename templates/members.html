@@ -2,109 +2,317 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>会員管理 - ジム管理ダッシュボード</title>
+    <title>MEMBER MANAGEMENT - CHOCOZAP SECURITY</title>
     <style>
-        body {
-            font-family: 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f4f6f9;
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --accent-lime-dark: #b5d432;
+            --danger-color: #ff2a5f;
+        }
+
+        /* 1. ページ全体を縦方向のFlexboxにしてフッターを底に沈める */
+        html, body {
+            height: 100%;
             margin: 0;
-            padding: 20px;
-            color: #333;
         }
-        h1 {
-            text-align: center;
-            color: #2c3e50;
-            margin-bottom: 20px;
-        }
-        .nav-links {
-            text-align: center;
-            margin-bottom: 20px;
-        }
-        .nav-links a {
-            background-color: #34495e;
-            color: white;
-            padding: 8px 16px;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 0.9rem;
-            font-weight: bold;
-        }
-        .nav-links a:hover {
-            background-color: #2c3e50;
-        }
-        .panel {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 900px;
-            margin: 0 auto;
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding-top: 160px; /* 固定ヘッダー分の余白 */
+            padding-left: 20px;
+            padding-right: 20px;
             box-sizing: border-box;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
+            
+            display: flex;
+            flex-direction: column;
         }
-        .panel h2 {
+
+        /* 2. メインコンテンツが少ない時でもフッターを押し下げるラッパー */
+        .page-content {
+            flex: 1;
+        }
+
+        /* 共通のリキッドグラスヘッダー */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .nav-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+        .nav-btn:hover::after {
+            background-color: var(--accent-lime);
+        }
+
+        /* 共通パネル・テーブル */
+        .cyber-panel-full {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 24px;
+            max-width: 1024px;
+            margin: 0 auto 40px auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .cyber-panel-full h2 {
             margin-top: 0;
-            font-size: 1.2rem;
-            border-bottom: 2px solid #2980b9;
-            padding-bottom: 8px;
-            color: #2980b9;
+            font-size: 0.9rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-main);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: monospace;
         }
-        .members-table {
+
+        .cyber-table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 10px;
         }
-        .members-table th, .members-table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #ddd;
+        .cyber-table th, .cyber-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9rem;
             text-align: left;
-            font-size: 0.95rem;
         }
-        .members-table th {
-            background-color: #f8f9fa;
-            color: #555;
+        .cyber-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-weight: 800;
         }
+        .cyber-table td {
+            text-align: center;
+            color: var(--text-main);
+        }
+
         .btn-delete {
-            background-color: #e74c3c;
-            color: white;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 4px;
+            background: #ffe6eb;
+            color: var(--danger-color);
+            border: 1px solid #ffadb8;
+            padding: 4px 12px;
+            border-radius: 2px;
             cursor: pointer;
-            font-weight: bold;
-            font-size: 0.85rem;
+            font-weight: 800;
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            transition: all 0.2s ease;
         }
         .btn-delete:hover {
-            background-color: #c0392b;
+            background: var(--danger-color);
+            color: #fff;
+        }
+
+        /* 共通フッター＆ティッカー */
+        .site-footer {
+            background: var(--surface-card);
+            border-top: 1px solid var(--border-color);
+            margin-top: auto; /* コンテンツが少なくても自動で最下部に配置 */
+            padding: 30px 20px;
+            box-sizing: border-box;
+            width: 100%;
+            margin-left: -20px; /* <body>の左右パディングを打ち消して画面幅いっぱいに広げる */
+            padding-left: calc(20px + 20px);
+            padding-right: calc(20px + 20px);
+        }
+
+        .ticker-wrap {
+            width: 100%;
+            overflow: hidden;
+            background: var(--surface-alt);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+            white-space: nowrap;
+            box-sizing: border-box;
+            font-family: monospace;
+            font-size: 0.75rem;
+            font-weight: 800;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 30px;
+        }
+
+        .ticker-move {
+            display: inline-block;
+            animation: marquee 25s linear infinite;
+        }
+
+        .ticker-item {
+            display: inline-block;
+            padding: 0 30px;
+        }
+
+        .ticker-item span {
+            color: var(--text-main);
+            background: var(--accent-lime);
+            padding: 1px 6px;
+            border-radius: 2px;
+            margin-left: 6px;
+        }
+
+        @keyframes marquee {
+            0% { transform: translate3d(0, 0, 0); }
+            100% { transform: translate3d(-50%, 0, 0); }
+        }
+
+        .footer-content {
+            max-width: 1024px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .footer-brand-mini {
+            font-weight: 900;
+            color: var(--text-main);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
     </style>
 </head>
 <body>
 
-    <h1>👥 ジム会員管理システム</h1>
-    
-    <div class="nav-links">
-        <a href="/">← ライブ監視ダッシュボードへ戻る</a>
+    <header class="site-header">
+        <div class="header-brand">
+            <h1>CHOCOZAP SECURITY</h1>
+        </div>
+        <nav class="nav-container">
+            <a href="/" class="nav-btn">&larr; LIVE MONITOR</a>
+        </nav>
+    </header>
+
+    <!-- メインコンテンツを包むラッパー -->
+    <div class="page-content">
+        <div class="cyber-panel-full" style="margin-top: 20px;">
+            <h2>REGISTERED MEMBERS MANAGEMENT</h2>
+            <table class="cyber-table">
+                <thead>
+                    <tr>
+                        <th>Member ID</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>QR Token</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="members-table-body">
+                    <tr>
+                        <td colspan="5" style="color: var(--text-muted); padding: 20px;">LOADING DATABASE...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
     </div>
 
-    <div class="panel">
-        <h2>登録会員一覧</h2>
-        <table class="members-table">
-            <thead>
-                <tr>
-                    <th>会員ID</th>
-                    <th>お名前</th>
-                    <th>メールアドレス</th>
-                    <th>QRトークン</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody id="members-table-body">
-                <tr>
-                    <td colspan="5" style="text-align: center; color: #888; padding: 20px;">読み込み中...</td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
+    <!-- フッター -->
+    <footer class="site-footer">
+        <div class="ticker-wrap">
+            <div class="ticker-move">
+                <div class="ticker-item">DATABASE STATUS: <span>CONNECTED</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">MEMBER REGISTRY: <span>ACTIVE</span></div>
+                <div class="ticker-item">DATABASE STATUS: <span>CONNECTED</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">MEMBER REGISTRY: <span>ACTIVE</span></div>
+            </div>
+        </div>
+        <div class="footer-content">
+            <div class="footer-brand-mini">CHOCOZAP SECURITY COMMAND CENTER</div>
+            <div>&copy; 2026 CHOCOZAP SECURITY // ALL RIGHTS RESERVED.</div>
+        </div>
+    </footer>
 
     <script>
         async function fetchMembers() {
@@ -115,18 +323,18 @@
                 tbody.innerHTML = '';
 
                 if (data.members.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #888; padding: 20px;">登録されている会員はいません。</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">登録されている会員はいません。</td></tr>`;
                     return;
                 }
 
                 data.members.forEach(member => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td style="font-family: monospace; font-weight: bold;">${member.member_id}</td>
-                        <td>${member.name}</td>
-                        <td>${member.email}</td>
-                        <td style="font-family: monospace; font-size: 0.8rem; color: #666;">${member.qr_token.substring(0, 15)}...</td>
-                        <td><button class="btn-delete" onclick="deleteMember('${member.member_id}', '${member.name}')">削除</button></td>
+                        <td style="font-family: monospace; font-weight: 700;">${member.member_id}</td>
+                        <td style="font-weight: 700;">${member.name}</td>
+                        <td style="font-family: monospace;">${member.email}</td>
+                        <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">${member.qr_token.substring(0, 15)}...</td>
+                        <td><button class="btn-delete" onclick="deleteMember('${member.member_id}', '${member.name}')">DELETE</button></td>
                     `;
                     tbody.appendChild(tr);
                 });
@@ -147,7 +355,7 @@
                 const result = await response.json();
                 if (result.status === 'success') {
                     alert(result.message);
-                    fetchMembers(); // 一覧を再読み込み
+                    fetchMembers();
                 } else {
                     alert(`エラー: ${result.message}`);
                 }
@@ -156,7 +364,6 @@
             }
         }
 
-        // ページ読み込み時に会員一覧を取得
         fetchMembers();
     </script>
 </body>
