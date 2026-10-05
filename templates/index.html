@@ -154,7 +154,8 @@
         <div class="panel">
             <h2>🎥 ライブカメラ映像 (1台を共有)</h2>
             <div class="video-box">
-                <img src="/video" alt="Live Stream">
+                <!-- idを付与して、戻るボタン等で復帰したときにも自動で再接続させる -->
+                <img id="video-stream" alt="Live Stream">
             </div>
             <div style="font-size: 0.85rem; color: #666; text-align: center;">
                 💡 ターミナル（黒い画面）で <b>Enterキー</b> を押すと、<br>この映像のAI処理が「入口」と「ルーム」に切り替わります。
@@ -239,6 +240,32 @@
     </div>
 
     <script>
+        // カメラ映像を確実に再接続・再描画するための関数
+        function reloadVideoStream() {
+            const videoBox = document.querySelector('.video-box');
+            if (videoBox) {
+                // 一度中の img タグを完全に消去する
+                videoBox.innerHTML = '';
+                
+                // 新しい img タグを動的に作り直して追加する（キャッシュ回避のクエリ付き）
+                const newImg = document.createElement('img');
+                newImg.id = 'video-stream';
+                newImg.alt = 'Live Stream';
+                newImg.src = "/video?t=" + new Date().getTime();
+                videoBox.appendChild(newImg);
+            }
+        }
+
+        // ページが表示されたとき（「戻る」で戻ってきたときも含む）に実行
+        window.addEventListener('pageshow', function(event) {
+            reloadVideoStream();
+        });
+
+        // 初回ロード時にも実行
+        window.addEventListener('DOMContentLoaded', function() {
+            reloadVideoStream();
+        });
+
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
