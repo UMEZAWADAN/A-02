@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import cv2
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,6 +20,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel
+import uvicorn
 
 # テンプレートエンジンの準備
 app = FastAPI()
