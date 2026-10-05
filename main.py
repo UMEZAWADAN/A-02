@@ -293,7 +293,7 @@ def camera_processing_loop():
             active_machine_key = None
 
             for face in faces:
-                if state.first_user_embedding is None and state.last_scanned_qr != "None" and (current_time - state.last_qr_time) < 15.0:
+                if state.first_user_embedding is None and state.last_scanned_qr != "None" and (current_time - state.last_qr_time) < 60.0:
                     state.first_user_embedding = face.embedding
                     state.first_user_name = state.last_scanned_qr
                     state.accumulated_time = 0.0
