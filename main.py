@@ -1,18 +1,24 @@
 import asyncio
-import cv2
+import base64
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from io import BytesIO
 import json
 import numpy as np
 import os
+import smtplib
 import sqlite3
 import threading
 import time
+import uuid
 from datetime import datetime
 from queue import Queue
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, StreamingResponse
-import uvicorn
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
+from pydantic import BaseModel
 
 # テンプレートエンジンの準備
 app = FastAPI()
@@ -31,6 +37,12 @@ CO_TRAILING_WINDOW = 5.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 5.0
 
+# 📧 メール送信設定（実際の運用に合わせて書き換えてください）
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SENDER_EMAIL = "your_email@gmail.com"  # 送信元のメールアドレス
+SENDER_PASSWORD = "your_app_password"   # アプリパスワード等
+
 LINE_X = 320
 CAMERA_ID = 0  # 内蔵カメラ1台
 
@@ -38,7 +50,7 @@ CAMERA_ID = 0  # 内蔵カメラ1台
 active_mode = "entrance"
 mode_lock = threading.Lock()
 
-# 🏋️‍♂️️ マシンエリアの定義
+# 🏋️‍♂️ マシンエリアの定義
 MACHINE_AREAS = {
     "bench_press": {"name": "ベンチプレス", "box": [50, 100, 250, 350], "limit": 15.0},
     "squat_rack": {"name": "スクワットラック", "box": [390, 100, 590, 350], "limit": 20.0}
@@ -51,7 +63,7 @@ def init_database():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # 【ステップ1で追加】会員マスタテーブル
+    # 会員マスタテーブル
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS members (
             member_id TEXT PRIMARY KEY,
@@ -380,9 +392,80 @@ def console_switcher_thread():
             break
 
 # =========================================================================
-# 🚀 FastAPI サーバー & ストリーミング設定
+# 🚀 FastAPI サーバー & ストリーミング・登録API設定
 # =========================================================================
 connected_websockets = []
+
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    image: str
+
+@app.get("/register", response_class=HTMLResponse)
+def get_register_page(request: Request):
+    return templates.TemplateResponse(request, "register.html", {})
+
+@app.post("/api/register")
+def api_register(data: RegisterRequest):
+    try:
+        header, encoded = data.image.split(",", 1)
+        image_bytes = base64.b64decode(encoded)
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        from insightface.app import FaceAnalysis
+        face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
+        face_app.prepare(ctx_id=0, det_size=(640, 640))
+        faces = face_app.get(frame)
+
+        if len(faces) == 0:
+            return {"status": "error", "message": "顔が検出されませんでした。もう一度撮影してください。"}
+        
+        face_embedding = faces[0].embedding.tobytes()
+
+        member_id = "mem_" + uuid.uuid4().hex[:8]
+        qr_token = "token_" + uuid.uuid4().hex
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (?, ?, ?, ?, ?)",
+            (member_id, data.name, data.email, qr_token, sqlite3.Binary(face_embedding))
+        )
+        conn.commit()
+        conn.close()
+
+        import qrcode
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(qr_token)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        img_io = BytesIO()
+        img.save(img_io, 'PNG')
+        img_io.seek(0)
+
+        msg = MIMEMultipart()
+        msg['Subject'] = '【ジムセキュリティ】会員登録完了と専用QRコードのお知らせ'
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = data.email
+
+        body = MIMEText(f"{data.name} 様\n\nジムの新規ご登録ありがとうございます。\nあなた専用の入館用QRコードを発行いたしました。\n添付のQRコードを受付のカメラにかざしてご入館ください。")
+        msg.attach(body)
+
+        img_attachment = MIMEImage(img_io.read(), name="gym_qr_code.png")
+        msg.attach(img_attachment)
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, data.email, msg.as_string())
+
+        return {"status": "success", "member_id": member_id}
+
+    except Exception as e:
+        print(f"登録エラー: {e}")
+        return {"status": "error", "message": str(e)}
 
 def generate_stream():
     while True:
@@ -440,4 +523,5 @@ if __name__ == "__main__":
     
     print("\n🚀 サーバーを起動しました！")
     print("👉 ブラウザで http://localhost:8000/ を開いて映像を確認してください。")
+    print("👉 会員登録ページ: http://localhost:8000/register")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
