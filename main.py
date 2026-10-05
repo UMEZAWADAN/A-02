@@ -22,21 +22,19 @@ templates = Jinja2Templates(directory="templates")
 # ⚙️ システム設定値（調整可能）
 # =========================================================================
 DB_PATH = "gym_security.db"
-DUPLICATE_QR_WINDOW = 5.0  # 同じQRコードの重複読み取りを無視する時間（秒）
-CO_TRAILING_WINDOW = 5.0   # QR認証後、この秒数以内にラインを通過しなければならない（秒）
-LIMIT_SECONDS = 10.0       # 長時間占有と判定するデモ用制限時間（秒）
-FACE_TIMEOUT = 5.0         # 画面から顔が消えてから離席と判定する時間（秒）
+DUPLICATE_QR_WINDOW = 5.0
+CO_TRAILING_WINDOW = 5.0
+LIMIT_SECONDS = 10.0
+FACE_TIMEOUT = 5.0
 
-# カメラ画面の「中央の縦線」のX座標（横幅640pxの真ん中）
 LINE_X = 320
+CAMERA_ID = 0  # 内蔵カメラ1台
 
-# 📷 カメラデバイス設定（内蔵カメラ1台を共有して使用）
-CAMERA_ID = 0  
+# 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
+active_mode = "entrance"
+mode_lock = threading.Lock()
 
-# カメラの台数状態（強制的に1台共有モード）
-HAS_SECOND_CAMERA = True
-
-# 🏋️‍♂️ マシンエリアの定義 (ROI: [x1, y1, x2, y2]) ※ルームカメラ(640x480)内の座標
+# 🏋️‍♂️ マシンエリアの定義
 MACHINE_AREAS = {
     "bench_press": {"name": "ベンチプレス", "box": [50, 100, 250, 350], "limit": 15.0},
     "squat_rack": {"name": "スクワットラック", "box": [390, 100, 590, 350], "limit": 20.0}
@@ -46,7 +44,6 @@ MACHINE_AREAS = {
 # 💾 データベース自動初期化
 # =========================================================================
 def init_database():
-    """SQLiteデータベースと必要な履歴テーブルを初期化する"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -72,43 +69,9 @@ def init_database():
 
 init_database()
 
-# =========================================================================
-# 🧠 AIモデル・ツールの初期化
-# =========================================================================
 print(">> [1/3] YOLO（人流解析）モデルを読み込み中...")
 yolo_model = None
 qr_detector = cv2.QRCodeDetector()
-
-# =========================================================================
-# 🎥 カメラ共有ハブシステム（1台のカメラ映像を入口とルームで共有）
-# =========================================================================
-entrance_latest_frame = None
-room_latest_frame = None
-frame_lock = threading.Lock()
-
-def camera_hub_thread():
-    """1台のカメラ映像を入口用とルーム用の両方に配信するスレッド"""
-    global entrance_latest_frame, room_latest_frame
-    
-    cap = cv2.VideoCapture(CAMERA_ID)
-    
-    if not cap.isOpened():
-        print("❌ エラー: Webカメラが見つかりません。カメラの接続を確認してください。")
-        return
-
-    print("📹 【カメラ1台モード】内蔵カメラの映像を入口とルームで共有して稼働します。")
-
-    while cap.isOpened():
-        success, frame = cap.read()
-        if success:
-            frame = cv2.resize(frame, (640, 480))
-            with frame_lock:
-                entrance_latest_frame = frame.copy()
-                room_latest_frame = frame.copy()
-
-        time.sleep(0.03)
-
-    cap.release()
 
 # =========================================================================
 # 💾 システム状態管理（ステート）用クラス
@@ -127,7 +90,6 @@ class SystemStateManager:
         self.accumulated_time = 0.0
         self.last_check_time = None
         
-        # 🏋️‍♂️ マシン別占有状態のトラッキング用
         self.machine_states = {
             k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None} 
             for k in MACHINE_AREAS.keys()
@@ -207,227 +169,192 @@ class SystemStateManager:
 
 state = SystemStateManager()
 
-entrance_output_frame = None
-room_output_frame = None
+# 配信用フレーム
+current_output_frame = None
 render_lock = threading.Lock()
 
 # =========================================================================
-# 🏃 スレッド1：入口ゲートのAI処理 (YOLO人数カウント ＆ QR認証)
+# 🎥 カメラ統合処理スレッド（キーボード切り替え対応）
 # =========================================================================
-def entrance_processing_loop():
-    global entrance_output_frame, yolo_model
+def camera_test_loop():
+    global current_output_frame, active_mode, yolo_model
     from ultralytics import YOLO
-    
-    yolo_model = YOLO("yolo11n.pt")
-    track_history = {}
-    print("🏃 入口ゲート（YOLO + QR）処理スレッドが稼働しました。[cite: 1]")
-
-    while True:
-        current_time = time.time()
-        frame = None
-        
-        with frame_lock:
-            if entrance_latest_frame is not None:
-                frame = entrance_latest_frame.copy()
-                
-        if frame is None:
-            time.sleep(0.03)
-            continue
-
-        # 1. QRコード検出処理
-        qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
-        if qr_bbox is not None and len(qr_bbox) > 0:
-            pts = qr_bbox[0].astype(int)
-            for i in range(4):
-                cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), 2)
-            if qr_data:
-                if qr_data != state.last_scanned_qr or (current_time - state.last_qr_time) > DUPLICATE_QR_WINDOW:
-                    state.process_qr(qr_data, current_time)
-                    print(f"🔓 【QR認証成功】 会員ID: {qr_data}")
-                    state.accumulated_time = 0.0
-                    state.last_check_time = current_time
-
-        # 2. YOLOによる人流トラッキング
-        yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
-        
-        cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
-        cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-
-        if yolo_results[0].boxes.id is not None:
-            boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
-            track_ids = yolo_results[0].boxes.id.cpu().numpy().astype(int)
-
-            for box, track_id in zip(boxes, track_ids):
-                x_center = int((box[0] + box[2]) / 2)
-                y_center = int((box[1] + box[3]) / 2)
-
-                cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
-                cv2.circle(frame, (x_center, y_center), 4, (0, 0, 255), -1)
-
-                if track_id in track_history:
-                    prev_x = track_history[track_id]
-
-                    if prev_x < LINE_X and x_center >= LINE_X:
-                        time_since_qr = current_time - state.last_qr_time
-                        if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None":
-                            state.register_pass("IN", state.last_scanned_qr, 0)
-                            print(f"✅ [入館許可] 会員 {state.last_scanned_qr} が入館しました。[cite: 1]")
-                        else:
-                            state.set_alert(True)
-                            state.register_pass("IN", "Unknown", 1)
-                            print("🚨 [共連れ検知] 不正入館の疑いあり！[cite: 1]")
-
-                    elif prev_x > LINE_X and x_center <= LINE_X:
-                        state.register_pass("OUT", "Unknown", 0)
-                        state.set_alert(False)
-
-                track_history[track_id] = x_center
-
-        cv2.putText(frame, f"IN: {state.in_count}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(frame, f"OUT: {state.out_count}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        cv2.putText(frame, f"Last QR: {state.last_scanned_qr}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        if state.co_trailing_alert:
-            cv2.rectangle(frame, (0, 0), (640, 480), (0, 0, 255), 5)
-            cv2.putText(frame, "CO-TRAILING ALERT", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
-
-        with render_lock:
-            entrance_output_frame = frame.copy()
-
-        time.sleep(0.01)
-
-# =========================================================================
-# 👤 スレッド2：トレーニングルームのAI処理 (顔識別 ＆ マシン占有ROI判定)
-# =========================================================================
-def room_processing_loop():
-    """トレーニングエリアの顔認識＆マシン占有ループ"""
-    global room_output_frame
-
     from insightface.app import FaceAnalysis
+
+    yolo_model = YOLO("yolo11n.pt")
+    
+    print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
     face_app.prepare(ctx_id=0, det_size=(640, 640))
-    print("👤 トレーニングルーム（顔認識 ＆ マシン占有監視）処理スレッドが稼働しました。[cite: 1]")
 
-    while True:
+    cap = cv2.VideoCapture(CAMERA_ID)
+    if not cap.isOpened():
+        print("❌ エラー: カメラを開けませんでした。")
+        return
+
+    track_history = {}
+    print("\n====================================================")
+    print(" 📹 カメラテストループが稼働しました。")
+    print(" 🎛️ PC上のプレビュー画面（OpenCVウィンドウ）を選択し、")
+    print("     【 C キー 】を押すと、モードが切り替わります。")
+    print("     現在のモード: [ 入口 (ENTRANCE) / ルーム (ROOM) ]")
+    print("====================================================\n")
+
+    while cap.isOpened():
         current_time = time.time()
-        frame = None
-        
-        with frame_lock:
-            if room_latest_frame is not None:
-                frame = room_latest_frame.copy()
-                
-        if frame is None:
+        success, frame = cap.read()
+        if not success:
             time.sleep(0.03)
             continue
 
-        # 🏋️‍♂️ 映像上にマシンエリア（枠）を描画
-        for m_key, m_info in MACHINE_AREAS.items():
-            bx1, by1, bx2, by2 = m_info["box"]
-            st = state.machine_states[m_key]
-            color = (0, 0, 255) if st["status"] == "overtime" else (255, 165, 0)
-            cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
-            cv2.putText(frame, f"{m_info['name']} ({int(st['duration'])}s)", (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        frame = cv2.resize(frame, (640, 480))
+        with mode_lock:
+            mode = active_mode
 
-        faces = face_app.get(frame)
-        user_detected_this_frame = False
-        target_face_box = None
-        active_machine_key = None
+        # -----------------------------------------------------------------
+        # モード A: 入口ゲート処理 (QR & YOLO)
+        # -----------------------------------------------------------------
+        if mode == "entrance":
+            qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
+            if qr_bbox is not None and len(qr_bbox) > 0:
+                pts = qr_bbox[0].astype(int)
+                for i in range(4):
+                    cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), 2)
+                if qr_data:
+                    if qr_data != state.last_scanned_qr or (current_time - state.last_qr_time) > DUPLICATE_QR_WINDOW:
+                        state.process_qr(qr_data, current_time)
+                        print(f"🔓 【QR認証成功】 会員ID: {qr_data}")
+                        state.accumulated_time = 0.0
+                        state.last_check_time = current_time
 
-        for face in faces:
-            if state.first_user_embedding is None and state.last_scanned_qr != "None" and (current_time - state.last_qr_time) < 10.0:
-                state.first_user_embedding = face.embedding
-                state.first_user_name = state.last_scanned_qr
-                state.accumulated_time = 0.0
-                state.last_check_time = current_time
-                print(f"👤 【顔自動登録】 '{state.first_user_name}' を自動追跡対象に設定しました。[cite: 1]")
+            yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
+            cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
+            cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
-            if state.first_user_embedding is not None:
-                sim = np.dot(state.first_user_embedding, face.embedding) / (np.linalg.norm(state.first_user_embedding) * np.linalg.norm(face.embedding))
-                if sim > 0.6:
-                    user_detected_this_frame = True
-                    target_face_box = face.bbox.astype(int)
-                    
-                    fx = int((target_face_box[0] + target_face_box[2]) / 2)
-                    fy = int(target_face_box[3])
-                    
-                    for m_key, m_info in MACHINE_AREAS.items():
-                        bx1, by1, bx2, by2 = m_info["box"]
-                        if bx1 <= fx <= bx2 and by1 <= fy <= by2:
-                            active_machine_key = m_key
-                            break
-                    break
+            if yolo_results[0].boxes.id is not None:
+                boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
+                track_ids = yolo_results[0].boxes.id.cpu().numpy().astype(int)
 
-        if user_detected_this_frame:
-            if state.last_check_time is not None:
-                delta_time = current_time - state.last_check_time
-                state.accumulated_time += delta_time
-            state.last_check_time = current_time
+                for box, track_id in zip(boxes, track_ids):
+                    x_center = int((box[0] + box[2]) / 2)
+                    y_center = int((box[1] + box[3]) / 2)
+                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
 
-            state.update_machine_occupancy(active_machine_key, state.first_user_name, current_time)
-            state.push_update()
+                    if track_id in track_history:
+                        prev_x = track_history[track_id]
+                        if prev_x < LINE_X and x_center >= LINE_X:
+                            time_since_qr = current_time - state.last_qr_time
+                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None":
+                                state.register_pass("IN", state.last_scanned_qr, 0)
+                                print(f"✅ [入館許可] 会員 {state.last_scanned_qr}")
+                            else:
+                                state.set_alert(True)
+                                state.register_pass("IN", "Unknown", 1)
+                                print("🚨 [共連れ検知]")
+                        elif prev_x > LINE_X and x_center <= LINE_X:
+                            state.register_pass("OUT", "Unknown", 0)
+                            state.set_alert(False)
 
-            if target_face_box is not None:
-                x1, y1, x2, y2 = target_face_box
-                if state.accumulated_time > LIMIT_SECONDS:
-                    color = (0, 0, 255)
-                    text = f"{state.first_user_name}: OVER TIME ({int(state.accumulated_time)}s)"
-                else:
-                    color = (0, 255, 0)
-                    text = f"{state.first_user_name}: OK ({int(state.accumulated_time)}s)"
-                
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    track_history[track_id] = x_center
+
+            cv2.putText(frame, f"MODE: [ENTRANCE] (Press 'c' to switch)", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+        # -----------------------------------------------------------------
+        # モード B: トレーニングルーム処理 (顔認識 & マシンROI)
+        # -----------------------------------------------------------------
         else:
-            if state.last_check_time is not None and (current_time - state.last_check_time) > FACE_TIMEOUT:
+            for m_key, m_info in MACHINE_AREAS.items():
+                bx1, by1, bx2, by2 = m_info["box"]
+                st = state.machine_states[m_key]
+                color = (0, 0, 255) if st["status"] == "overtime" else (255, 165, 0)
+                cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
+                cv2.putText(frame, f"{m_info['name']} ({int(st['duration'])}s)", (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            faces = face_app.get(frame)
+            user_detected_this_frame = False
+            target_face_box = None
+            active_machine_key = None
+
+            for face in faces:
+                if state.first_user_embedding is None and state.last_scanned_qr != "None" and (current_time - state.last_qr_time) < 15.0:
+                    state.first_user_embedding = face.embedding
+                    state.first_user_name = state.last_scanned_qr
+                    state.accumulated_time = 0.0
+                    state.last_check_time = current_time
+                    print(f"👤 【顔自動登録】 '{state.first_user_name}' を紐付けました。")
+
                 if state.first_user_embedding is not None:
-                    conn = sqlite3.connect(DB_PATH)
-                    conn.cursor().execute(
-                        "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration) VALUES (?, ?, ?, ?)",
-                        (state.first_user_name, 
-                         datetime.fromtimestamp(current_time - state.accumulated_time).strftime("%Y-%m-%d %H:%M:%S"),
-                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                         state.accumulated_time)
-                    )
-                    conn.commit()
-                    conn.close()
-                    print(f"🚪 [占有終了] {state.first_user_name} が離席。ログを保存しました。[cite: 1]")
-                
-                state.first_user_embedding = None
-                state.first_user_name = "Guest"
-                state.accumulated_time = 0.0
-                state.last_check_time = None
-                
-                for m_key in state.machine_states.keys():
-                    if state.machine_states[m_key]["user"] != "-":
-                        state.machine_states[m_key] = {"user": "-", "duration": 0.0, "status": "free", "start_time": None}
-                
+                    sim = np.dot(state.first_user_embedding, face.embedding) / (np.linalg.norm(state.first_user_embedding) * np.linalg.norm(face.embedding))
+                    if sim > 0.6:
+                        user_detected_this_frame = True
+                        target_face_box = face.bbox.astype(int)
+                        
+                        fx = int((target_face_box[0] + target_face_box[2]) / 2)
+                        fy = int(target_face_box[3])
+                        
+                        for m_key, m_info in MACHINE_AREAS.items():
+                            bx1, by1, bx2, by2 = m_info["box"]
+                            if bx1 <= fx <= bx2 and by1 <= fy <= by2:
+                                active_machine_key = m_key
+                                break
+                        break
+
+            if user_detected_this_frame:
+                if state.last_check_time is not None:
+                    state.accumulated_time += (current_time - state.last_check_time)
+                state.last_check_time = current_time
+
+                state.update_machine_occupancy(active_machine_key, state.first_user_name, current_time)
                 state.push_update()
 
-        with render_lock:
-            room_output_frame = frame.copy()
+                if target_face_box is not None:
+                    x1, y1, x2, y2 = target_face_box
+                    color = (0, 0, 255) if state.accumulated_time > LIMIT_SECONDS else (0, 255, 0)
+                    text = f"{state.first_user_name} ({int(state.accumulated_time)}s)"
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            else:
+                if state.last_check_time is not None and (current_time - state.last_check_time) > FACE_TIMEOUT:
+                    state.first_user_embedding = None
+                    state.first_user_name = "Guest"
+                    state.accumulated_time = 0.0
+                    state.last_check_time = None
+                    state.push_update()
 
-        time.sleep(0.01)
+            cv2.putText(frame, f"MODE: [ROOM] (Press 'c' to switch)", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+        # Web配信用のフレームを更新
+        with render_lock:
+            current_output_frame = frame.copy()
+
+        # PCのOpenCVウィンドウにも描画してキー入力を監視
+        cv2.imshow("Gym AI Test Window (Press 'c' to switch mode)", frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('c') or key == ord('C'):
+            with mode_lock:
+                if active_mode == "entrance":
+                    active_mode = "room"
+                    print("🎛️ モード切り替え ➔ 【トレーニングルームモード】に変更しました")
+                else:
+                    active_mode = "entrance"
+                    print("🎛️ モード切り替え ➔ 【入口ゲートモード】に変更しました")
+        elif key == ord('q') or key == ord('Q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
 
 # =========================================================================
-# 🚀 FastAPI サーバー & リアルタイム Web フロントエンド
+# 🚀 FastAPI サーバー & ストリーミング設定
 # =========================================================================
 connected_websockets = []
 
-def generate_entrance_stream():
+def generate_stream():
     while True:
         with render_lock:
-            if entrance_output_frame is not None:
-                ret, buffer = cv2.imencode('.jpg', entrance_output_frame)
-                if ret:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        time.sleep(0.04)
-
-def generate_room_stream():
-    while True:
-        with render_lock:
-            if room_output_frame is not None:
-                ret, buffer = cv2.imencode('.jpg', room_output_frame)
+            if current_output_frame is not None:
+                ret, buffer = cv2.imencode('.jpg', current_output_frame)
                 if ret:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
@@ -435,38 +362,17 @@ def generate_room_stream():
 
 @app.get("/video/entrance")
 def video_entrance():
-    return StreamingResponse(generate_entrance_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(generate_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.get("/video/room")
 def video_room():
-    return StreamingResponse(generate_room_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(generate_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_websockets.append(websocket)
     try:
-        machines_payload = []
-        for key, info in MACHINE_AREAS.items():
-            st = state.machine_states[key]
-            machines_payload.append({
-                "name": info["name"],
-                "user": st["user"],
-                "duration": int(st["duration"]),
-                "status": st["status"]
-            })
-
-        initial_data = {
-            "in_count": state.in_count,
-            "out_count": state.out_count,
-            "last_qr": state.last_scanned_qr,
-            "co_trailing_alert": state.co_trailing_alert,
-            "user_name": state.first_user_name,
-            "accumulated_time": int(state.accumulated_time),
-            "is_overtime": state.accumulated_time > LIMIT_SECONDS if state.first_user_embedding is not None else False,
-            "machines": machines_payload
-        }
-        await websocket.send_text(json.dumps(initial_data))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -492,19 +398,11 @@ def get_dashboard(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
 
 # =========================================================================
-# 🏁 統合Webサーバー & AI処理スレッドの同時起動
+# 🏁 起動処理
 # =========================================================================
 if __name__ == "__main__":
-    hub_thread = threading.Thread(target=camera_hub_thread, daemon=True)
-    hub_thread.start()
+    test_thread = threading.Thread(target=camera_test_loop, daemon=True)
+    test_thread.start()
     
-    entrance_thread = threading.Thread(target=entrance_processing_loop, daemon=True)
-    entrance_thread.start()
-    
-    room_thread = threading.Thread(target=room_processing_loop, daemon=True)
-    room_thread.start()
-    
-    print("\n🚀 全システムが正常起動しました！[cite: 1]")
-    print("👉 ブラウザで http://localhost:8000/ を開き、管理画面を確認してください。[cite: 1]")
-    
+    print("\n🚀 サーバーを起動中... http://localhost:8000/ を開いてください。")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
