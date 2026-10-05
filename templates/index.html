@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>ジム セキュリティ＆人流監視ダッシュボード</title>
+    <title>ジム セキュリティ＆人流監視ダッシュボード（テスト用）</title>
     <style>
         body {
             font-family: 'Helvetica Neue', Arial, sans-serif;
@@ -14,7 +14,20 @@
         h1 {
             text-align: center;
             color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .mode-banner {
+            text-align: center;
+            font-size: 1.3rem;
+            font-weight: bold;
+            padding: 10px;
             margin-bottom: 20px;
+            border-radius: 6px;
+            background-color: #34495e;
+            color: white;
+        }
+        .mode-banner span {
+            color: #f1c40f;
         }
         .container {
             display: flex;
@@ -28,7 +41,7 @@
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            width: 480px;
+            width: 520px;
             box-sizing: border-box;
         }
         .panel h2 {
@@ -38,13 +51,12 @@
             padding-bottom: 8px;
             color: #2980b9;
         }
-        /* 履歴用の幅広パネル */
         .panel-full {
             background: #fff;
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 980px;
+            max-width: 1060px;
             margin: 0 auto;
             box-sizing: border-box;
         }
@@ -67,34 +79,25 @@
             height: auto;
             display: block;
         }
-        .status-table {
+        .status-table, .history-table, .machine-table {
             width: 100%;
             border-collapse: collapse;
         }
-        .status-table th, .status-table td {
+        .status-table th, .status-table td,
+        .history-table th, .history-table td,
+        .machine-table th, .machine-table td {
             padding: 8px 12px;
             border-bottom: 1px solid #ddd;
             text-align: left;
             font-size: 0.95rem;
         }
-        .status-table th {
-            width: 40%;
-            color: #555;
-        }
-        /* マシン状況・履歴一覧用のテーブル共通 */
-        .history-table, .machine-table {
-            width: 100%;
-            border-collapse: collapse;
-            text-align: center;
-        }
-        .history-table th, .history-table td, .machine-table th, .machine-table td {
-            padding: 10px;
-            border-bottom: 1px solid #eee;
-            font-size: 0.9rem;
-        }
         .history-table th, .machine-table th {
             background-color: #f8f9fa;
             color: #555;
+            text-align: center;
+        }
+        .history-table td, .machine-table td {
+            text-align: center;
         }
         .badge {
             padding: 4px 8px;
@@ -123,86 +126,94 @@
         }
         .alert-box.active {
             display: block;
-            animation: pulse 1s infinite;
         }
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
+        /* モードによる表示切り替え用スタイル */
+        .mode-section {
+            display: none;
+        }
+        .mode-section.active-mode {
+            display: block;
         }
     </style>
 </head>
 <body>
 
     <h1>🏋️‍♂️ ジム セキュリティ・人流監視ダッシュボード</h1>
+    <div class="mode-banner">
+        現在のテストモード: <span id="current-mode-text">入口ゲートモード (Entrance)</span> — <small style="color: #ddd;">※ターミナルで Enter を押すと切替</small>
+    </div>
 
     <div class="container">
-        <!-- 入口ゲートパネル -->
+        <!-- カメラ＆映像表示パネル（1台の映像を共通利用） -->
         <div class="panel">
-            <h2>🚪 入口ゲート (YOLO + QR)</h2>
+            <h2>🎥 ライブカメラ映像 (1台を共有)</h2>
             <div class="video-box">
-                <img src="/video/entrance" alt="Entrance Stream">
+                <!-- 共通のエンドポイント /video から映像を取得 -->
+                <img src="/video" alt="Live Stream">
             </div>
-            <table class="status-table">
-                <tr>
-                    <th>入館数 (IN)</th>
-                    <td id="in-count" style="color: #27ae60; font-weight: bold; font-size: 1.2rem;">0</td>
-                </tr>
-                <tr>
-                    <th>退館数 (OUT)</th>
-                    <td id="out-count" style="color: #c0392b; font-weight: bold; font-size: 1.2rem;">0</td>
-                </tr>
-                <tr>
-                    <th>直近のQR</th>
-                    <td id="last-qr">None</td>
-                </tr>
-            </table>
-            <div id="co-trailing-alert" class="alert-box">🚨 共連れ（不正入館）検知アラート！</div>
+            <div style="font-size: 0.85rem; color: #666; text-align: center;">
+                💡 ターミナル（黒い画面）で <b>Enterキー</b> を押すと、<br>この映像のAI処理が「入口」と「ルーム」に切り替わります。
+            </div>
         </div>
 
-        <!-- トレーニングルームパネル -->
+        <!-- 右側：モードに応じて切り替わる詳細ステータスパネル -->
         <div class="panel">
-            <h2>👤 トレーニングルーム (顔識別)</h2>
-            <div class="video-box">
-                <img src="/video/room" alt="Room Stream">
+            <!-- 入口モード用ステータス -->
+            <div id="section-entrance" class="mode-section active-mode">
+                <h2>🚪 入口ゲート情報 (YOLO + QR)</h2>
+                <table class="status-table">
+                    <tr>
+                        <th>入館数 (IN)</th>
+                        <td id="in-count" style="color: #27ae60; font-weight: bold; font-size: 1.2rem;">0</td>
+                    </tr>
+                    <tr>
+                        <th>退館数 (OUT)</th>
+                        <td id="out-count" style="color: #c0392b; font-weight: bold; font-size: 1.2rem;">0</td>
+                    </tr>
+                    <tr>
+                        <th>直近のQR</th>
+                        <td id="last-qr">None</td>
+                    </tr>
+                </table>
+                <div id="co-trailing-alert" class="alert-box">🚨 共連れ（不正入館）検知アラート！</div>
             </div>
-            <table class="status-table">
-                <tr>
-                    <th>追跡中ユーザー</th>
-                    <td id="user-name">Guest</td>
-                </tr>
-                <tr>
-                    <th>滞在時間</th>
-                    <td id="accumulated-time">0 秒</td>
-                </tr>
-                <tr>
-                    <th>ステータス</th>
-                    <td id="overtime-status" style="font-weight: bold;">通常</td>
-                </tr>
-            </table>
-        </div>
 
-        <!-- 🏋️‍♂️ マシン別 占有状況パネル (新規追加) -->
-        <div class="panel">
-            <h2>🏋️‍♂️ マシン別 占有監視 (YOLO ROI)</h2>
-            <div style="min-height: 140px; margin-bottom: 15px;">
-                <table class="machine-table">
+            <!-- トレーニングルームモード用ステータス -->
+            <div id="section-room" class="mode-section">
+                <h2>👤 トレーニングルーム情報 (顔識別)</h2>
+                <table class="status-table">
+                    <tr>
+                        <th>追跡中ユーザー</th>
+                        <td id="user-name">Guest</td>
+                    </tr>
+                    <tr>
+                        <th>滞在時間</th>
+                        <td id="accumulated-time">0 秒</td>
+                    </tr>
+                    <tr>
+                        <th>ステータス</th>
+                        <td id="overtime-status" style="font-weight: bold;">通常</td>
+                    </tr>
+                </table>
+
+                <h3 style="margin-top: 20px; font-size: 1rem; color: #2980b9; border-bottom: 1px solid #3498db; padding-bottom: 4px;">🏋️‍♂️ マシン別 占有監視</h3>
+                <table class="machine-table" style="margin-top: 10px;">
                     <thead>
                         <tr>
                             <th>マシン名</th>
                             <th>利用者</th>
-                            <th>経過時間</th>
+                            <th>経過</th>
                             <th>状態</th>
                         </tr>
                     </thead>
                     <tbody id="machine-table-body">
                         <tr>
-                            <td colspan="4" style="color: #888; padding: 20px;">マシン監視データを待機中...</td>
+                            <td colspan="4" style="color: #888;">待機中...</td>
                         </tr>
                     </tbody>
                 </table>
+                <div id="machine-alert-box" class="alert-box">⚠️ マシンの長時間占有を検知しました！</div>
             </div>
-            <div id="machine-alert-box" class="alert-box">⚠️ 人気マシンの長時間占有を検知しました！</div>
         </div>
     </div>
 
@@ -233,12 +244,26 @@
         ws.onmessage = function(event) {
             const data = JSON.parse(event.data);
 
+            // 現在のモード表示の切り替え
+            const modeText = document.getElementById('current-mode-text');
+            const secEntrance = document.getElementById('section-entrance');
+            const secRoom = document.getElementById('section-room');
+
+            if (data.active_mode === 'entrance') {
+                modeText.innerText = "入口ゲートモード (Entrance)";
+                secEntrance.classList.add('active-mode');
+                secRoom.classList.remove('active-mode');
+            } else {
+                modeText.innerText = "トレーニングルームモード (Room)";
+                secRoom.classList.add('active-mode');
+                secEntrance.classList.remove('active-mode');
+            }
+
             // 入口データの更新
             document.getElementById('in-count').innerText = data.in_count;
             document.getElementById('out-count').innerText = data.out_count;
             document.getElementById('last-qr').innerText = data.last_qr;
 
-            // 共連れアラートの切り替え
             const alertBox = document.getElementById('co-trailing-alert');
             if (data.co_trailing_alert) {
                 alertBox.classList.add('active');
@@ -259,7 +284,7 @@
                 statusTd.style.color = "#27ae60";
             }
 
-            // 🏋️‍♂️ マシン別 占有状況の更新 (新規)
+            // マシン別占有状況の更新
             if (data.machines && data.machines.length > 0) {
                 const machineTbody = document.getElementById('machine-table-body');
                 machineTbody.innerHTML = '';
@@ -267,7 +292,6 @@
 
                 data.machines.forEach(machine => {
                     const tr = document.createElement('tr');
-                    
                     let statusBadge = '<span class="badge badge-machine-free">空き</span>';
                     if (machine.status === 'using') {
                         statusBadge = '<span class="badge badge-machine-using">利用中</span>';
@@ -299,11 +323,9 @@
                 tbody.innerHTML = '';
                 data.logs.forEach(log => {
                     const tr = document.createElement('tr');
-                    
                     const dirBadge = log.direction === 'IN' 
                         ? '<span class="badge badge-in">IN (入館)</span>' 
                         : '<span class="badge badge-out">OUT (退館)</span>';
-
                     const alertBadge = log.is_alert === 1 
                         ? '<span class="badge badge-alert">🚨 共連れ・不正</span>' 
                         : '<span class="badge badge-normal">正常通行</span>';
@@ -320,9 +342,8 @@
         };
 
         ws.onclose = function() {
-            console.log("WebSocket接続が切れました。ページを再読み込みしてください。");
+            console.log("WebSocket接続が切れました。");
         };
     </script>
-
 </body>
 </html>
