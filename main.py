@@ -37,6 +37,12 @@ CAMERA_ROOM_ID = 1      # ルーム用カメラのインデックス
 # カメラの台数状態（自動判定）
 HAS_SECOND_CAMERA = False
 
+# 🏋️‍♂️ マシンエリアの定義 (ROI: [x1, y1, x2, y2]) ※ルームカメラ(640x480)内の座標
+MACHINE_AREAS = {
+    "bench_press": {"name": "ベンチプレス", "box": [50, 100, 250, 350], "limit": 15.0},
+    "squat_rack": {"name": "スクワットラック", "box": [390, 100, 590, 350], "limit": 20.0}
+}
+
 # =========================================================================
 # 💾 データベース自動初期化
 # =========================================================================
@@ -92,19 +98,17 @@ def camera_hub_thread():
     
     if not HAS_SECOND_CAMERA:
         cap_room.release()
-        print("📹 【カメラ1台モード】トレーニングルームのAIは完全にオフ。入口（QR・YOLO）のみで稼働します。")
+        print("📹 【カメラ1台モード】トレーニングルームのAIは完全にオフ。入口（QR・YOLO）のみで稼働します。[cite: 1]")
     else:
-        print("📹 【カメラ2台モード】入口用とルーム用のカメラを完全分離して稼働します。")
+        print("📹 【カメラ2台モード】入口用とルーム用のカメラを完全分離して稼働します。[cite: 1]")
 
     while cap_entrance.isOpened():
-        # 入口用カメラの読み込み
         success_ent, frame_ent = cap_entrance.read()
         if success_ent:
             frame_ent = cv2.resize(frame_ent, (640, 480))
             with frame_lock:
                 entrance_latest_frame = frame_ent.copy()
 
-        # ルーム用カメラの読み込み（2台ある場合のみ取得）
         if HAS_SECOND_CAMERA:
             success_room, frame_room = cap_room.read()
             if success_room:
@@ -112,8 +116,6 @@ def camera_hub_thread():
                 with frame_lock:
                     room_latest_frame = frame_room.copy()
         else:
-            # 1台のときはルーム用カメラの映像は取得せず、ダミーとして真っ黒な画面か、またはプレビュー用にメッセージを出す等の処理にできる
-            # 今回はシンプルにルーム用最新フレームはNoneにしておきます
             with frame_lock:
                 room_latest_frame = None
 
@@ -139,6 +141,12 @@ class SystemStateManager:
         self.first_user_name = "Guest"
         self.accumulated_time = 0.0
         self.last_check_time = None
+        
+        # 🏋️‍♂️ マシン別占有状態のトラッキング用
+        self.machine_states = {
+            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None} 
+            for k in MACHINE_AREAS.keys()
+        }
         
         self.update_queue = Queue()
 
@@ -170,7 +178,43 @@ class SystemStateManager:
             conn.close()
             self.push_update()
 
+    def update_machine_occupancy(self, active_machine_key, user_name, current_time):
+        with self._lock:
+            for m_key in self.machine_states.keys():
+                if m_key == active_machine_key and user_name != "Guest":
+                    m_state = self.machine_states[m_key]
+                    if m_state["user"] != user_name:
+                        m_state["user"] = user_name
+                        m_state["start_time"] = current_time
+                        m_state["duration"] = 0.0
+                    else:
+                        if m_state["start_time"] is not None:
+                            m_state["duration"] = current_time - m_state["start_time"]
+                    
+                    limit = MACHINE_AREAS[m_key]["limit"]
+                    if m_state["duration"] > limit:
+                        m_state["status"] = "overtime"
+                    else:
+                        m_state["status"] = "using"
+                else:
+                    # このエリアにいない場合、誰も使っていなければリセット
+                    m_state = self.machine_states[m_key]
+                    if m_state["user"] == user_name or user_name == "Guest":
+                        # 一定時間いなければ空きにする等の処理も可能だが簡易的にクリア
+                        pass
+
     def push_update(self):
+        # フロントエンドに送るマシン一覧データの構築
+        machines_payload = []
+        for key, info in MACHINE_AREAS.items():
+            st = self.machine_states[key]
+            machines_payload.append({
+                "name": info["name"],
+                "user": st["user"],
+                "duration": int(st["duration"]),
+                "status": st["status"]
+            })
+
         data = {
             "in_count": self.in_count,
             "out_count": self.out_count,
@@ -178,7 +222,8 @@ class SystemStateManager:
             "co_trailing_alert": self.co_trailing_alert,
             "user_name": self.first_user_name,
             "accumulated_time": int(self.accumulated_time),
-            "is_overtime": self.accumulated_time > LIMIT_SECONDS if self.first_user_embedding is not None else False
+            "is_overtime": self.accumulated_time > LIMIT_SECONDS if self.first_user_embedding is not None else False,
+            "machines": machines_payload  # 👈 フロントへマシン状況を送信[cite: 1]
         }
         self.update_queue.put(data)
 
@@ -197,7 +242,7 @@ def entrance_processing_loop():
     
     yolo_model = YOLO("yolo11n.pt")
     track_history = {}
-    print("🏃 入口ゲート（YOLO + QR）処理スレッドが稼働しました。")
+    print("🏃 入口ゲート（YOLO + QR）処理スレッドが稼働しました。[cite: 1]")
 
     while True:
         current_time = time.time()
@@ -248,11 +293,11 @@ def entrance_processing_loop():
                         time_since_qr = current_time - state.last_qr_time
                         if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None":
                             state.register_pass("IN", state.last_scanned_qr, 0)
-                            print(f"✅ [入館許可] 会員 {state.last_scanned_qr} が入館しました。")
+                            print(f"✅ [入館許可] 会員 {state.last_scanned_qr} が入館しました。[cite: 1]")
                         else:
                             state.set_alert(True)
                             state.register_pass("IN", "Unknown", 1)
-                            print("🚨 [共連れ検知] 不正入館の疑いあり！")
+                            print("🚨 [共連れ検知] 不正入館の疑いあり！[cite: 1]")
 
                     elif prev_x > LINE_X and x_center <= LINE_X:
                         state.register_pass("OUT", "Unknown", 0)
@@ -274,26 +319,23 @@ def entrance_processing_loop():
         time.sleep(0.01)
 
 # =========================================================================
-# 👤 スレッド2：トレーニングルームのAI処理 (カメラ2台のときのみ稼働)
+# 👤 スレッド2：トレーニングルームのAI処理 (顔識別 ＆ マシン占有ROI判定)
 # =========================================================================
 def room_processing_loop():
-    """トレーニングエリアの顔識別ループ（カメラ1台のときは完全オフ）"""
+    """トレーニングエリアの顔認識＆マシン占有ループ（カメラ1台のときは完全オフ）"""
     global room_output_frame
     
-    # カメラが2台になるまで完全に待機
     while not HAS_SECOND_CAMERA:
         time.sleep(1.0)
-        # 1台のときはルーム用画面に「ROOM CAMERA OFF」と表示した黒画面などを出す
         dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
         cv2.putText(dummy_frame, "ROOM CAMERA OFF (1-Camera Mode)", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
         with render_lock:
             room_output_frame = dummy_frame
 
-    # 2台目のカメラがある場合のみInsightFaceをロード
     from insightface.app import FaceAnalysis
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
     face_app.prepare(ctx_id=0, det_size=(640, 640))
-    print("👤 トレーニングルーム（顔認識）処理スレッドが稼働しました。")
+    print("👤 トレーニングルーム（顔認識 ＆ マシン占有監視）処理スレッドが稼働しました。[cite: 1]")
 
     while True:
         current_time = time.time()
@@ -307,9 +349,18 @@ def room_processing_loop():
             time.sleep(0.03)
             continue
 
+        # 🏋️‍♂️ 映像上にマシンエリア（枠）を描画
+        for m_key, m_info in MACHINE_AREAS.items():
+            bx1, by1, bx2, by2 = m_info["box"]
+            st = state.machine_states[m_key]
+            color = (0, 0, 255) if st["status"] == "overtime" else (255, 165, 0)
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
+            cv2.putText(frame, f"{m_info['name']} ({int(st['duration'])}s)", (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
         faces = face_app.get(frame)
         user_detected_this_frame = False
         target_face_box = None
+        active_machine_key = None
 
         for face in faces:
             if state.first_user_embedding is None and state.last_scanned_qr != "None" and (current_time - state.last_qr_time) < 10.0:
@@ -317,13 +368,23 @@ def room_processing_loop():
                 state.first_user_name = state.last_scanned_qr
                 state.accumulated_time = 0.0
                 state.last_check_time = current_time
-                print(f"👤 【顔自動登録】 '{state.first_user_name}' を自動追跡対象に設定しました。")
+                print(f"👤 【顔自動登録】 '{state.first_user_name}' を自動追跡対象に設定しました。[cite: 1]")
 
             if state.first_user_embedding is not None:
                 sim = np.dot(state.first_user_embedding, face.embedding) / (np.linalg.norm(state.first_user_embedding) * np.linalg.norm(face.embedding))
                 if sim > 0.6:
                     user_detected_this_frame = True
                     target_face_box = face.bbox.astype(int)
+                    
+                    # 🎯 ユーザーの足元（顔バウンディングボックスの下部中心など）がどのマシンエリアにあるか判定
+                    fx = int((target_face_box[0] + target_face_box[2]) / 2)
+                    fy = int(target_face_box[3])
+                    
+                    for m_key, m_info in MACHINE_AREAS.items():
+                        bx1, by1, bx2, by2 = m_info["box"]
+                        if bx1 <= fx <= bx2 and by1 <= fy <= by2:
+                            active_machine_key = m_key
+                            break
                     break
 
         if user_detected_this_frame:
@@ -331,6 +392,10 @@ def room_processing_loop():
                 delta_time = current_time - state.last_check_time
                 state.accumulated_time += delta_time
             state.last_check_time = current_time
+
+            # マシン占有状態の更新
+            state.update_machine_occupancy(active_machine_key, state.first_user_name, current_time)
+            state.push_update()
 
             if target_face_box is not None:
                 x1, y1, x2, y2 = target_face_box
@@ -356,12 +421,18 @@ def room_processing_loop():
                     )
                     conn.commit()
                     conn.close()
-                    print(f"🚪 [占有終了] {state.first_user_name} が離席。ログを保存しました。")
+                    print(f"🚪 [占有終了] {state.first_user_name} が離席。ログを保存しました。[cite: 1]")
                 
                 state.first_user_embedding = None
                 state.first_user_name = "Guest"
                 state.accumulated_time = 0.0
                 state.last_check_time = None
+                
+                # マシン状態も空きにリセット
+                for m_key in state.machine_states.keys():
+                    if state.machine_states[m_key]["user"] != "-":
+                        state.machine_states[m_key] = {"user": "-", "duration": 0.0, "status": "free", "start_time": None}
+                
                 state.push_update()
 
         with render_lock:
@@ -407,6 +478,17 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_websockets.append(websocket)
     try:
+        # 初期接続時にマシンデータも一緒に送る
+        machines_payload = []
+        for key, info in MACHINE_AREAS.items():
+            st = state.machine_states[key]
+            machines_payload.append({
+                "name": info["name"],
+                "user": st["user"],
+                "duration": int(st["duration"]),
+                "status": st["status"]
+            })
+
         initial_data = {
             "in_count": state.in_count,
             "out_count": state.out_count,
@@ -414,7 +496,8 @@ async def websocket_endpoint(websocket: WebSocket):
             "co_trailing_alert": state.co_trailing_alert,
             "user_name": state.first_user_name,
             "accumulated_time": int(state.accumulated_time),
-            "is_overtime": state.accumulated_time > LIMIT_SECONDS if state.first_user_embedding is not None else False
+            "is_overtime": state.accumulated_time > LIMIT_SECONDS if state.first_user_embedding is not None else False,
+            "machines": machines_payload
         }
         await websocket.send_text(json.dumps(initial_data))
         while True:
@@ -454,8 +537,8 @@ if __name__ == "__main__":
     room_thread = threading.Thread(target=room_processing_loop, daemon=True)
     room_thread.start()
     
-    print("\n🚀 全システムが正常起動しました！")
-    print("👉 ブラウザで http://localhost:8000/ を開き、管理画面を確認してください。")
-    print("※ サーバーを終了するにはターミナルで Ctrl+C を押してください。")
+    print("\n🚀 全システムが正常起動しました！[cite: 1]")
+    print("👉 ブラウザで http://localhost:8000/ を開き、管理画面を確認してください。[cite: 1]")
+    print("※ サーバーを終了するにはターミナルで Ctrl+C を押してください。[cite: 1]")
     
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
