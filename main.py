@@ -155,7 +155,19 @@ class SystemStateManager:
                 "status": st["status"]
             })
 
+        # DBから直近の履歴を取得
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 5")
+        logs_payload = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        with mode_lock:
+            current_active_mode = active_mode
+
         data = {
+            "active_mode": current_active_mode,
             "in_count": self.in_count,
             "out_count": self.out_count,
             "last_qr": self.last_scanned_qr,
@@ -163,21 +175,21 @@ class SystemStateManager:
             "user_name": self.first_user_name,
             "accumulated_time": int(self.accumulated_time),
             "is_overtime": self.accumulated_time > LIMIT_SECONDS if self.first_user_embedding is not None else False,
-            "machines": machines_payload
+            "machines": machines_payload,
+            "logs": logs_payload
         }
         self.update_queue.put(data)
 
 state = SystemStateManager()
 
-# 配信用フレーム
 current_output_frame = None
 render_lock = threading.Lock()
 
 # =========================================================================
-# 🎥 カメラ統合処理スレッド（キーボード切り替え対応）
+# 🎥 カメラ処理ループ（1台のカメラでモードに応じてAI処理を切り替え）
 # =========================================================================
-def camera_test_loop():
-    global current_output_frame, active_mode, yolo_model
+def camera_processing_loop():
+    global current_output_frame, yolo_model
     from ultralytics import YOLO
     from insightface.app import FaceAnalysis
 
@@ -194,10 +206,10 @@ def camera_test_loop():
 
     track_history = {}
     print("\n====================================================")
-    print(" 📹 カメラテストループが稼働しました。")
-    print(" 🎛️ PC上のプレビュー画面（OpenCVウィンドウ）を選択し、")
-    print("     【 C キー 】を押すと、モードが切り替わります。")
-    print("     現在のモード: [ 入口 (ENTRANCE) / ルーム (ROOM) ]")
+    print(" 📹 カメラ処理ループが稼働しました。")
+    print(" 🖥️  ブラウザ (http://localhost:8000/) で映像を確認してください。")
+    print(" ⌨️  【ターミナルで Enter キーを押す】と、")
+    print("     [ 入口モード ] ⇄ [ ルームモード ] が切り替わります！")
     print("====================================================\n")
 
     while cap.isOpened():
@@ -257,7 +269,7 @@ def camera_test_loop():
 
                     track_history[track_id] = x_center
 
-            cv2.putText(frame, f"MODE: [ENTRANCE] (Press 'c' to switch)", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(frame, "MODE: [ENTRANCE]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
         # -----------------------------------------------------------------
@@ -322,28 +334,35 @@ def camera_test_loop():
                     state.last_check_time = None
                     state.push_update()
 
-            cv2.putText(frame, f"MODE: [ROOM] (Press 'c' to switch)", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(frame, "MODE: [ROOM]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         # Web配信用のフレームを更新
         with render_lock:
             current_output_frame = frame.copy()
 
-        # PCのOpenCVウィンドウにも描画してキー入力を監視
-        cv2.imshow("Gym AI Test Window (Press 'c' to switch mode)", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('c') or key == ord('C'):
+        time.sleep(0.01)
+
+    cap.release()
+
+# =========================================================================
+# ⌨️ ターミナルでの Enter キー監視スレッド（モード切替用）
+# =========================================================================
+def console_switcher_thread():
+    global active_mode
+    while True:
+        try:
+            input()  # ターミナルで Enter キーが押されるのを待つ
             with mode_lock:
                 if active_mode == "entrance":
                     active_mode = "room"
-                    print("🎛️ モード切り替え ➔ 【トレーニングルームモード】に変更しました")
+                    print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】 に切り替えました（マシン監視）")
                 else:
                     active_mode = "entrance"
-                    print("🎛️ モード切り替え ➔ 【入口ゲートモード】に変更しました")
-        elif key == ord('q') or key == ord('Q'):
+                    print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】 に切り替えました（QR & 人流）")
+            # 切り替え直後に状態を強制ブロードキャスト
+            state.push_update()
+        except Exception:
             break
-
-    cap.release()
-    cv2.destroyAllWindows()
 
 # =========================================================================
 # 🚀 FastAPI サーバー & ストリーミング設定
@@ -360,12 +379,8 @@ def generate_stream():
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
         time.sleep(0.04)
 
-@app.get("/video/entrance")
-def video_entrance():
-    return StreamingResponse(generate_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-@app.get("/video/room")
-def video_room():
+@app.get("/video")
+def video_feed():
     return StreamingResponse(generate_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.websocket("/ws")
@@ -401,8 +416,12 @@ def get_dashboard(request: Request):
 # 🏁 起動処理
 # =========================================================================
 if __name__ == "__main__":
-    test_thread = threading.Thread(target=camera_test_loop, daemon=True)
-    test_thread.start()
+    camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
+    camera_thread.start()
     
-    print("\n🚀 サーバーを起動中... http://localhost:8000/ を開いてください。")
+    switcher_thread = threading.Thread(target=console_switcher_thread, daemon=True)
+    switcher_thread.start()
+    
+    print("\n🚀 サーバーを起動しました！")
+    print("👉 ブラウザで http://localhost:8000/ を開いて映像を確認してください。")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
