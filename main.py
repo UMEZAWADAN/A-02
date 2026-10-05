@@ -129,7 +129,24 @@ class SystemStateManager:
 
     def process_qr(self, qr_data: str, current_time: float):
         with self._lock:
-            self.last_scanned_qr = qr_data
+            # 【ステップ3で修正】データベースからqr_tokenに一致する会員を検索
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT member_id, name FROM members WHERE qr_token = ?", (qr_data,))
+            member = cursor.fetchone()
+            conn.close()
+
+            if member:
+                # 登録済み会員の場合
+                self.last_scanned_qr = f"{member['name']} ({member['member_id']})"
+                self.first_user_name = member['name']
+                print(f"🔓 【QR認証成功】 歓迎: {member['name']} (ID: {member['member_id']})")
+            else:
+                # 未登録・無効なQRの場合
+                self.last_scanned_qr = "Invalid QR"
+                print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data}")
+
             self.last_qr_time = current_time
             self.co_trailing_alert = False
             self.push_update()
@@ -265,7 +282,6 @@ def camera_processing_loop():
                 if qr_data:
                     if qr_data != state.last_scanned_qr or (current_time - state.last_qr_time) > DUPLICATE_QR_WINDOW:
                         state.process_qr(qr_data, current_time)
-                        print(f"🔓 【QR認証成功】 会員ID: {qr_data}")
                         state.accumulated_time = 0.0
                         state.last_check_time = current_time
 
@@ -286,13 +302,14 @@ def camera_processing_loop():
                         prev_x = track_history[track_id]
                         if prev_x < LINE_X and x_center >= LINE_X:
                             time_since_qr = current_time - state.last_qr_time
-                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None":
+                            # 有効なQRが直近でスキャンされており、かつ "Invalid QR" でない場合のみ入館許可
+                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR":
                                 state.register_pass("IN", state.last_scanned_qr, 0)
                                 print(f"✅ [入館許可] 会員 {state.last_scanned_qr}")
                             else:
                                 state.set_alert(True)
                                 state.register_pass("IN", "Unknown", 1)
-                                print("🚨 [共連れ検知]")
+                                print("🚨 [共連れ検知 または 未認証]")
                         elif prev_x > LINE_X and x_center <= LINE_X:
                             state.register_pass("OUT", "Unknown", 0)
                             state.set_alert(False)
@@ -319,9 +336,8 @@ def camera_processing_loop():
             active_machine_key = None
 
             for face in faces:
-                if state.first_user_embedding is None and state.last_scanned_qr != "None" and (current_time - state.last_qr_time) < 60.0:
+                if state.first_user_embedding is None and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR" and (current_time - state.last_qr_time) < 60.0:
                     state.first_user_embedding = face.embedding
-                    state.first_user_name = state.last_scanned_qr
                     state.accumulated_time = 0.0
                     state.last_check_time = current_time
                     print(f"👤 【顔自動登録】 '{state.first_user_name}' を紐付けました。")
