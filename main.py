@@ -115,10 +115,8 @@ class SystemStateManager:
         self.last_qr_time = 0.0
         self.co_trailing_alert = False
         
-        self.first_user_embedding = None
-        self.first_user_name = "Guest"
-        self.accumulated_time = 0.0
-        self.last_check_time = None
+        # ルーム監視用の状態管理（1:N識別対応）
+        self.active_users = {} # 検出中のユーザー情報を保持 {track_or_face_id: {"name": ..., "accumulated_time": ..., ...}}
         
         self.machine_states = {
             k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None} 
@@ -129,7 +127,6 @@ class SystemStateManager:
 
     def process_qr(self, qr_data: str, current_time: float):
         with self._lock:
-            # 【ステップ3で修正】データベースからqr_tokenに一致する会員を検索
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -138,12 +135,9 @@ class SystemStateManager:
             conn.close()
 
             if member:
-                # 登録済み会員の場合
                 self.last_scanned_qr = f"{member['name']} ({member['member_id']})"
-                self.first_user_name = member['name']
                 print(f"🔓 【QR認証成功】 歓迎: {member['name']} (ID: {member['member_id']})")
             else:
-                # 未登録・無効なQRの場合
                 self.last_scanned_qr = "Invalid QR"
                 print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data}")
 
@@ -219,9 +213,9 @@ class SystemStateManager:
             "out_count": self.out_count,
             "last_qr": self.last_scanned_qr,
             "co_trailing_alert": self.co_trailing_alert,
-            "user_name": self.first_user_name,
-            "accumulated_time": int(self.accumulated_time),
-            "is_overtime": self.accumulated_time > LIMIT_SECONDS if self.first_user_embedding is not None else False,
+            "user_name": "Multiple" if len(self.active_users) > 0 else "Guest",
+            "accumulated_time": 0,
+            "is_overtime": False,
             "machines": machines_payload,
             "logs": logs_payload
         }
@@ -282,8 +276,6 @@ def camera_processing_loop():
                 if qr_data:
                     if qr_data != state.last_scanned_qr or (current_time - state.last_qr_time) > DUPLICATE_QR_WINDOW:
                         state.process_qr(qr_data, current_time)
-                        state.accumulated_time = 0.0
-                        state.last_check_time = current_time
 
             yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
             cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
@@ -302,7 +294,6 @@ def camera_processing_loop():
                         prev_x = track_history[track_id]
                         if prev_x < LINE_X and x_center >= LINE_X:
                             time_since_qr = current_time - state.last_qr_time
-                            # 有効なQRが直近でスキャンされており、かつ "Invalid QR" でない場合のみ入館許可
                             if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR":
                                 state.register_pass("IN", state.last_scanned_qr, 0)
                                 print(f"✅ [入館許可] 会員 {state.last_scanned_qr}")
@@ -320,7 +311,7 @@ def camera_processing_loop():
             cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
         # -----------------------------------------------------------------
-        # モード B: トレーニングルーム処理 (顔認識 & マシンROI)
+        # モード B: トレーニングルーム処理 (1:N 顔認識 & マシンROI) 【ステップ4】
         # -----------------------------------------------------------------
         else:
             for m_key, m_info in MACHINE_AREAS.items():
@@ -330,57 +321,55 @@ def camera_processing_loop():
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
                 cv2.putText(frame, f"{m_info['name']} ({int(st['duration'])}s)", (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
+            # データベースから全会員の顔特徴量をロード
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT member_id, name, face_embedding FROM members WHERE face_embedding IS NOT NULL")
+            registered_members = cursor.fetchall()
+            conn.close()
+
             faces = face_app.get(frame)
-            user_detected_this_frame = False
-            target_face_box = None
             active_machine_key = None
+            detected_user_name = "Guest"
 
             for face in faces:
-                if state.first_user_embedding is None and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR" and (current_time - state.last_qr_time) < 60.0:
-                    state.first_user_embedding = face.embedding
-                    state.accumulated_time = 0.0
-                    state.last_check_time = current_time
-                    print(f"👤 【顔自動登録】 '{state.first_user_name}' を紐付けました。")
+                best_match_name = "Guest"
+                highest_sim = 0.0
 
-                if state.first_user_embedding is not None:
-                    sim = np.dot(state.first_user_embedding, face.embedding) / (np.linalg.norm(state.first_user_embedding) * np.linalg.norm(face.embedding))
-                    if sim > 0.6:
-                        user_detected_this_frame = True
-                        target_face_box = face.bbox.astype(int)
-                        
-                        fx = int((target_face_box[0] + target_face_box[2]) / 2)
-                        fy = int(target_face_box[3])
-                        
-                        for m_key, m_info in MACHINE_AREAS.items():
-                            bx1, by1, bx2, by2 = m_info["box"]
-                            if bx1 <= fx <= bx2 and by1 <= fy <= by2:
-                                active_machine_key = m_key
-                                break
-                        break
+                # 登録されている全会員とコサイン類似度を計算 (1:N 照合)
+                for member in registered_members:
+                    db_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
+                    sim = np.dot(db_embedding, face.embedding) / (np.linalg.norm(db_embedding) * np.linalg.norm(face.embedding))
+                    
+                    if sim > highest_sim:
+                        highest_sim = sim
+                        best_match_name = member['name']
 
-            if user_detected_this_frame:
-                if state.last_check_time is not None:
-                    state.accumulated_time += (current_time - state.last_check_time)
-                state.last_check_time = current_time
+                # 類似度が閾値 (例: 0.55以上) を超えた場合に本人と認定
+                if highest_sim > 0.55:
+                    detected_user_name = best_match_name
+                    target_face_box = face.bbox.astype(int)
+                    
+                    fx = int((target_face_box[0] + target_face_box[2]) / 2)
+                    fy = int(target_face_box[3])
+                    
+                    for m_key, m_info in MACHINE_AREAS.items():
+                        bx1, by1, bx2, by2 = m_info["box"]
+                        if bx1 <= fx <= bx2 and by1 <= fy <= by2:
+                            active_machine_key = m_key
+                            break
 
-                state.update_machine_occupancy(active_machine_key, state.first_user_name, current_time)
-                state.push_update()
-
-                if target_face_box is not None:
+                    # マシン利用状況の更新
+                    state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
+                    
+                    # 画面に名前と類似度を描画
                     x1, y1, x2, y2 = target_face_box
-                    color = (0, 0, 255) if state.accumulated_time > LIMIT_SECONDS else (0, 255, 0)
-                    text = f"{state.first_user_name} ({int(state.accumulated_time)}s)"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            else:
-                if state.last_check_time is not None and (current_time - state.last_check_time) > FACE_TIMEOUT:
-                    state.first_user_embedding = None
-                    state.first_user_name = "Guest"
-                    state.accumulated_time = 0.0
-                    state.last_check_time = None
-                    state.push_update()
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{detected_user_name} ({int(highest_sim*100)}%)", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            cv2.putText(frame, "MODE: [ROOM]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            state.push_update()
+            cv2.putText(frame, "MODE: [ROOM (1:N Matching)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         # Web配信用のフレームを更新
         with render_lock:
@@ -401,7 +390,7 @@ def console_switcher_thread():
             with mode_lock:
                 if active_mode == "entrance":
                     active_mode = "room"
-                    print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】 に切り替えました（マシン監視）")
+                    print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】 に切り替えました（1:N 顔認識マシン監視）")
                 else:
                     active_mode = "entrance"
                     print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】 に切り替えました（QR & 人流）")
@@ -539,7 +528,7 @@ if __name__ == "__main__":
     switcher_thread = threading.Thread(target=console_switcher_thread, daemon=True)
     switcher_thread.start()
     
-    print("\n🚀 サーバーを起動しました！")
-    print("👉 ブラウザで http://localhost:8000/ を開いて映像を確認してください。")
+    print("\n🚀 サーバーを完全にアップグレードしました！")
+    print("👉 ブラウザで http://localhost:8000/ を開いてダッシュボードを確認してください。")
     print("👉 会員登録ページ: http://localhost:8000/register")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
