@@ -20,7 +20,7 @@ templates = Jinja2Templates(directory="templates")
 
 # グローバル変数として追加
 clients = []
-last_detected_qr = "" # 直近のQRコードを保持する変数（もし名前が違ったら既存のものに合わせてください）
+last_detected_qr = "" # 直近のQRコードを保持する変数
 
 # =========================================================================
 # ⚙️ システム設定値（調整可能）
@@ -38,7 +38,7 @@ CAMERA_ID = 0  # 内蔵カメラ1台
 active_mode = "entrance"
 mode_lock = threading.Lock()
 
-# 🏋️‍♂️ マシンエリアの定義
+# 🏋️‍♂️️ マシンエリアの定義
 MACHINE_AREAS = {
     "bench_press": {"name": "ベンチプレス", "box": [50, 100, 250, 350], "limit": 15.0},
     "squat_rack": {"name": "スクワットラック", "box": [390, 100, 590, 350], "limit": 20.0}
@@ -50,6 +50,18 @@ MACHINE_AREAS = {
 def init_database():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # 【ステップ1で追加】会員マスタテーブル
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS members (
+            member_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            qr_token TEXT UNIQUE NOT NULL,
+            face_embedding BLOB
+        )
+    """)
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS passing_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -355,7 +367,7 @@ def console_switcher_thread():
     global active_mode
     while True:
         try:
-            input()  # ターミナルで Enter キーが押されるのを待つ
+            input()
             with mode_lock:
                 if active_mode == "entrance":
                     active_mode = "room"
@@ -363,7 +375,6 @@ def console_switcher_thread():
                 else:
                     active_mode = "entrance"
                     print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】 に切り替えました（QR & 人流）")
-            # 切り替え直後に状態を強制ブロードキャスト
             state.push_update()
         except Exception:
             break
@@ -393,7 +404,6 @@ async def websocket_endpoint(websocket: WebSocket):
     connected_websockets.append(websocket)
     try:
         while True:
-            # ブラウザからのメッセージを待つ（または単に接続維持）
             await websocket.receive_text()
     except WebSocketDisconnect:
         if websocket in connected_websockets:
@@ -419,7 +429,7 @@ def get_dashboard(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
 
 # =========================================================================
-# 🏁 起動処理
+# 🏁 起動確認
 # =========================================================================
 if __name__ == "__main__":
     camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
