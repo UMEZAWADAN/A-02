@@ -412,6 +412,17 @@ async def startup_event():
 def get_dashboard(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    clients.append(websocket)
+    try:
+        while True:
+            await asyncio.sleep(1)
+            # 必要に応じてここで最新データをクライアントに送信する処理を書きます
+    except WebSocketDisconnect:
+        clients.remove(websocket)
+
 # =========================================================================
 # 🏁 起動処理
 # =========================================================================
