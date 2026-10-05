@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>ジム セキュリティ＆人流監視ダッシュボード（テスト用）</title>
+    <title>ジム セキュリティ＆人流監視ダッシュボード（管理者用）</title>
     <style>
         body {
             font-family: 'Helvetica Neue', Arial, sans-serif;
@@ -127,7 +127,6 @@
         .alert-box.active {
             display: block;
         }
-        /* モードによる表示切り替え用スタイル */
         .mode-section {
             display: none;
         }
@@ -138,17 +137,16 @@
 </head>
 <body>
 
-    <h1>🏋️‍♂️ ジム セキュリティ・人流監視ダッシュボード</h1>
+    <h1>🛡️ ジム セキュリティ・管理者ダッシュボード</h1>
+    
     <div class="mode-banner">
         現在のテストモード: <span id="current-mode-text">入口ゲートモード (Entrance)</span> — <small style="color: #ddd;">※ターミナルで Enter を押すと切替</small>
     </div>
 
     <div class="container">
-        <!-- カメラ＆映像表示パネル（1台の映像を共通利用） -->
         <div class="panel">
             <h2>🎥 ライブカメラ映像 (1台を共有)</h2>
             <div class="video-box">
-                <!-- 共通のエンドポイント /video から映像を取得 -->
                 <img src="/video" alt="Live Stream">
             </div>
             <div style="font-size: 0.85rem; color: #666; text-align: center;">
@@ -156,9 +154,7 @@
             </div>
         </div>
 
-        <!-- 右側：モードに応じて切り替わる詳細ステータスパネル -->
         <div class="panel">
-            <!-- 入口モード用ステータス -->
             <div id="section-entrance" class="mode-section active-mode">
                 <h2>🚪 入口ゲート情報 (YOLO + QR)</h2>
                 <table class="status-table">
@@ -178,7 +174,6 @@
                 <div id="co-trailing-alert" class="alert-box">🚨 共連れ（不正入館）検知アラート！</div>
             </div>
 
-            <!-- トレーニングルームモード用ステータス -->
             <div id="section-room" class="mode-section">
                 <h2>👤 トレーニングルーム情報 (顔識別)</h2>
                 <table class="status-table">
@@ -217,7 +212,6 @@
         </div>
     </div>
 
-    <!-- 📋 直近の通行・違反履歴パネル -->
     <div class="panel-full">
         <h2>📋 直近の入退館・違反履歴 (リアルタイム)</h2>
         <table class="history-table">
@@ -244,7 +238,6 @@
         ws.onmessage = function(event) {
             const data = JSON.parse(event.data);
 
-            // 現在のモード表示の切り替え
             const modeText = document.getElementById('current-mode-text');
             const secEntrance = document.getElementById('section-entrance');
             const secRoom = document.getElementById('section-room');
@@ -259,7 +252,6 @@
                 secEntrance.classList.remove('active-mode');
             }
 
-            // 入口データの更新
             document.getElementById('in-count').innerText = data.in_count;
             document.getElementById('out-count').innerText = data.out_count;
             document.getElementById('last-qr').innerText = data.last_qr;
@@ -271,7 +263,6 @@
                 alertBox.classList.remove('active');
             }
 
-            // ルームデータの更新
             document.getElementById('user-name').innerText = data.user_name;
             document.getElementById('accumulated-time').innerText = data.accumulated_time + ' 秒';
 
@@ -284,7 +275,6 @@
                 statusTd.style.color = "#27ae60";
             }
 
-            // マシン別占有状況の更新
             if (data.machines && data.machines.length > 0) {
                 const machineTbody = document.getElementById('machine-table-body');
                 machineTbody.innerHTML = '';
@@ -317,7 +307,6 @@
                 }
             }
 
-            // 履歴テーブルの更新
             if (data.logs && data.logs.length > 0) {
                 const tbody = document.getElementById('logs-table-body');
                 tbody.innerHTML = '';
@@ -345,6 +334,5 @@
             console.log("WebSocket接続が切れました。");
         };
     </script>
-    
 </body>
 </html>
