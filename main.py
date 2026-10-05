@@ -570,6 +570,24 @@ def api_delete_member(member_id: str):
         return {"status": "error", "message": str(e)}
 
 # =========================================================================
+# 📋 管理者用：入退館・違反ログ一覧エンドポイント
+# =========================================================================
+@app.get("/admin/logs", response_class=HTMLResponse)
+def get_admin_logs_page(request: Request):
+    return templates.TemplateResponse(request, "logs.html", {})
+
+@app.get("/api/admin/logs")
+def api_get_logs():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    # データベースから最新の入退館ログを最大100件取得
+    cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
+    logs = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {"logs": logs}
+
+# =========================================================================
 # 🏁 起動確認
 # =========================================================================
 if __name__ == "__main__":
