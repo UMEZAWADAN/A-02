@@ -30,12 +30,11 @@ FACE_TIMEOUT = 5.0         # 画面から顔が消えてから離席と判定す
 # カメラ画面の「中央の縦線」のX座標（横幅640pxの真ん中）
 LINE_X = 320
 
-# 📷 カメラデバイス設定
-CAMERA_ENTRANCE_ID = 0  # 入口用カメラのインデックス
-CAMERA_ROOM_ID = 1      # ルーム用カメラのインデックス
+# 📷 カメラデバイス設定（内蔵カメラ1台を共有して使用）
+CAMERA_ID = 0  
 
-# カメラの台数状態（自動判定）
-HAS_SECOND_CAMERA = False
+# カメラの台数状態（強制的に1台共有モード）
+HAS_SECOND_CAMERA = True
 
 # 🏋️‍♂️ マシンエリアの定義 (ROI: [x1, y1, x2, y2]) ※ルームカメラ(640x480)内の座標
 MACHINE_AREAS = {
@@ -81,49 +80,35 @@ yolo_model = None
 qr_detector = cv2.QRCodeDetector()
 
 # =========================================================================
-# 🎥 複数カメラ対応のハブシステム
+# 🎥 カメラ共有ハブシステム（1台のカメラ映像を入口とルームで共有）
 # =========================================================================
 entrance_latest_frame = None
 room_latest_frame = None
 frame_lock = threading.Lock()
 
 def camera_hub_thread():
-    """カメラの接続状況に応じて映像を各処理へ分配するスレッド"""
-    global entrance_latest_frame, room_latest_frame, HAS_SECOND_CAMERA
+    """1台のカメラ映像を入口用とルーム用の両方に配信するスレッド"""
+    global entrance_latest_frame, room_latest_frame
     
-    cap_entrance = cv2.VideoCapture(CAMERA_ENTRANCE_ID)
-    cap_room = cv2.VideoCapture(CAMERA_ROOM_ID)
+    cap = cv2.VideoCapture(CAMERA_ID)
     
-    HAS_SECOND_CAMERA = cap_room.isOpened()
-    
-    if not HAS_SECOND_CAMERA:
-        cap_room.release()
-        print("📹 【カメラ1台モード】トレーニングルームのAIは完全にオフ。入口（QR・YOLO）のみで稼働します。[cite: 1]")
-    else:
-        print("📹 【カメラ2台モード】入口用とルーム用のカメラを完全分離して稼働します。[cite: 1]")
+    if not cap.isOpened():
+        print("❌ エラー: Webカメラが見つかりません。カメラの接続を確認してください。")
+        return
 
-    while cap_entrance.isOpened():
-        success_ent, frame_ent = cap_entrance.read()
-        if success_ent:
-            frame_ent = cv2.resize(frame_ent, (640, 480))
-            with frame_lock:
-                entrance_latest_frame = frame_ent.copy()
+    print("📹 【カメラ1台モード】内蔵カメラの映像を入口とルームで共有して稼働します。")
 
-        if HAS_SECOND_CAMERA:
-            success_room, frame_room = cap_room.read()
-            if success_room:
-                frame_room = cv2.resize(frame_room, (640, 480))
-                with frame_lock:
-                    room_latest_frame = frame_room.copy()
-        else:
+    while cap.isOpened():
+        success, frame = cap.read()
+        if success:
+            frame = cv2.resize(frame, (640, 480))
             with frame_lock:
-                room_latest_frame = None
+                entrance_latest_frame = frame.copy()
+                room_latest_frame = frame.copy()
 
         time.sleep(0.03)
 
-    cap_entrance.release()
-    if HAS_SECOND_CAMERA:
-        cap_room.release()
+    cap.release()
 
 # =========================================================================
 # 💾 システム状態管理（ステート）用クラス
@@ -196,15 +181,8 @@ class SystemStateManager:
                         m_state["status"] = "overtime"
                     else:
                         m_state["status"] = "using"
-                else:
-                    # このエリアにいない場合、誰も使っていなければリセット
-                    m_state = self.machine_states[m_key]
-                    if m_state["user"] == user_name or user_name == "Guest":
-                        # 一定時間いなければ空きにする等の処理も可能だが簡易的にクリア
-                        pass
 
     def push_update(self):
-        # フロントエンドに送るマシン一覧データの構築
         machines_payload = []
         for key, info in MACHINE_AREAS.items():
             st = self.machine_states[key]
@@ -223,7 +201,7 @@ class SystemStateManager:
             "user_name": self.first_user_name,
             "accumulated_time": int(self.accumulated_time),
             "is_overtime": self.accumulated_time > LIMIT_SECONDS if self.first_user_embedding is not None else False,
-            "machines": machines_payload  # 👈 フロントへマシン状況を送信[cite: 1]
+            "machines": machines_payload
         }
         self.update_queue.put(data)
 
@@ -322,15 +300,8 @@ def entrance_processing_loop():
 # 👤 スレッド2：トレーニングルームのAI処理 (顔識別 ＆ マシン占有ROI判定)
 # =========================================================================
 def room_processing_loop():
-    """トレーニングエリアの顔認識＆マシン占有ループ（カメラ1台のときは完全オフ）"""
+    """トレーニングエリアの顔認識＆マシン占有ループ"""
     global room_output_frame
-    
-    while not HAS_SECOND_CAMERA:
-        time.sleep(1.0)
-        dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        cv2.putText(dummy_frame, "ROOM CAMERA OFF (1-Camera Mode)", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
-        with render_lock:
-            room_output_frame = dummy_frame
 
     from insightface.app import FaceAnalysis
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
@@ -376,7 +347,6 @@ def room_processing_loop():
                     user_detected_this_frame = True
                     target_face_box = face.bbox.astype(int)
                     
-                    # 🎯 ユーザーの足元（顔バウンディングボックスの下部中心など）がどのマシンエリアにあるか判定
                     fx = int((target_face_box[0] + target_face_box[2]) / 2)
                     fy = int(target_face_box[3])
                     
@@ -393,7 +363,6 @@ def room_processing_loop():
                 state.accumulated_time += delta_time
             state.last_check_time = current_time
 
-            # マシン占有状態の更新
             state.update_machine_occupancy(active_machine_key, state.first_user_name, current_time)
             state.push_update()
 
@@ -428,7 +397,6 @@ def room_processing_loop():
                 state.accumulated_time = 0.0
                 state.last_check_time = None
                 
-                # マシン状態も空きにリセット
                 for m_key in state.machine_states.keys():
                     if state.machine_states[m_key]["user"] != "-":
                         state.machine_states[m_key] = {"user": "-", "duration": 0.0, "status": "free", "start_time": None}
@@ -478,7 +446,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_websockets.append(websocket)
     try:
-        # 初期接続時にマシンデータも一緒に送る
         machines_payload = []
         for key, info in MACHINE_AREAS.items():
             st = state.machine_states[key]
@@ -539,6 +506,5 @@ if __name__ == "__main__":
     
     print("\n🚀 全システムが正常起動しました！[cite: 1]")
     print("👉 ブラウザで http://localhost:8000/ を開き、管理画面を確認してください。[cite: 1]")
-    print("※ サーバーを終了するにはターミナルで Ctrl+C を押してください。[cite: 1]")
     
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
