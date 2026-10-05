@@ -81,18 +81,18 @@
             width: 40%;
             color: #555;
         }
-        /* 履歴一覧用のテーブル */
-        .history-table {
+        /* マシン状況・履歴一覧用のテーブル共通 */
+        .history-table, .machine-table {
             width: 100%;
             border-collapse: collapse;
             text-align: center;
         }
-        .history-table th, .history-table td {
+        .history-table th, .history-table td, .machine-table th, .machine-table td {
             padding: 10px;
             border-bottom: 1px solid #eee;
             font-size: 0.9rem;
         }
-        .history-table th {
+        .history-table th, .machine-table th {
             background-color: #f8f9fa;
             color: #555;
         }
@@ -107,6 +107,9 @@
         .badge-out { background-color: #7f8c8d; }
         .badge-alert { background-color: #e74c3c; }
         .badge-normal { background-color: #3498db; }
+        .badge-machine-free { background-color: #95a5a6; }
+        .badge-machine-using { background-color: #27ae60; }
+        .badge-machine-overtime { background-color: #e74c3c; }
 
         .alert-box {
             background-color: #e74c3c;
@@ -178,6 +181,29 @@
                 </tr>
             </table>
         </div>
+
+        <!-- 🏋️‍♂️ マシン別 占有状況パネル (新規追加) -->
+        <div class="panel">
+            <h2>🏋️‍♂️ マシン別 占有監視 (YOLO ROI)</h2>
+            <div style="min-height: 140px; margin-bottom: 15px;">
+                <table class="machine-table">
+                    <thead>
+                        <tr>
+                            <th>マシン名</th>
+                            <th>利用者</th>
+                            <th>経過時間</th>
+                            <th>状態</th>
+                        </tr>
+                    </thead>
+                    <tbody id="machine-table-body">
+                        <tr>
+                            <td colspan="4" style="color: #888; padding: 20px;">マシン監視データを待機中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="machine-alert-box" class="alert-box">⚠️ 人気マシンの長時間占有を検知しました！</div>
+        </div>
     </div>
 
     <!-- 📋 直近の通行・違反履歴パネル -->
@@ -231,6 +257,40 @@
             } else {
                 statusTd.innerText = "通常";
                 statusTd.style.color = "#27ae60";
+            }
+
+            // 🏋️‍♂️ マシン別 占有状況の更新 (新規)
+            if (data.machines && data.machines.length > 0) {
+                const machineTbody = document.getElementById('machine-table-body');
+                machineTbody.innerHTML = '';
+                let hasMachineAlert = false;
+
+                data.machines.forEach(machine => {
+                    const tr = document.createElement('tr');
+                    
+                    let statusBadge = '<span class="badge badge-machine-free">空き</span>';
+                    if (machine.status === 'using') {
+                        statusBadge = '<span class="badge badge-machine-using">利用中</span>';
+                    } else if (machine.status === 'overtime') {
+                        statusBadge = '<span class="badge badge-machine-overtime">超過警報</span>';
+                        hasMachineAlert = true;
+                    }
+
+                    tr.innerHTML = `
+                        <td style="font-weight: bold;">${machine.name}</td>
+                        <td>${machine.user}</td>
+                        <td>${machine.duration}秒</td>
+                        <td>${statusBadge}</td>
+                    `;
+                    machineTbody.appendChild(tr);
+                });
+
+                const machineAlertBox = document.getElementById('machine-alert-box');
+                if (hasMachineAlert) {
+                    machineAlertBox.classList.add('active');
+                } else {
+                    machineAlertBox.classList.remove('active');
+                }
             }
 
             // 履歴テーブルの更新
