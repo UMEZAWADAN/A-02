@@ -519,6 +519,36 @@ def get_dashboard(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
 
 # =========================================================================
+# 👥 管理者用：会員管理・一覧用エンドポイント
+# =========================================================================
+@app.get("/admin/members", response_class=HTMLResponse)
+def get_admin_members_page(request: Request):
+    return templates.TemplateResponse(request, "members.html", {})
+
+@app.get("/api/admin/members")
+def api_get_members():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    # セキュリティや一覧性のために顔特徴量(face_embedding)以外の情報を取得
+    cursor.execute("SELECT member_id, name, email, qr_token FROM members")
+    members = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {"members": members}
+
+@app.delete("/api/admin/members/{member_id}")
+def api_delete_member(member_id: str):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM members WHERE member_id = ?", (member_id,))
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": f"会員 {member_id} を削除しました。"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# =========================================================================
 # 🏁 起動確認
 # =========================================================================
 if __name__ == "__main__":
