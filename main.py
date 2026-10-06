@@ -639,7 +639,14 @@ if __name__ == "__main__":
     switcher_thread = threading.Thread(target=console_switcher_thread, daemon=True)
     switcher_thread.start()
     
+<<<<<<< HEAD
+    print("\n🚀 サーバーを起動しました！")
+    print("👉 ブラウザで http://localhost:8000/ を開いて映像を確認してください。")
+
+
+=======
     print("\n🚀 サーバーを完全にアップグレードしました！")
     print("👉 ブラウザで http://localhost:8000/ を開いてダッシュボードを確認してください。")
     print("👉 会員登録ページ: http://localhost:8000/register")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+>>>>>>> 38f529035f87c71f5fac31e939652e9512aac06d
