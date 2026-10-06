@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>管理者ログイン - chocoZAP SECURITY</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            background: #1a1a2e; /* サイバー・インダストリアルなダーク背景 */
+            color: #e0e0e0;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .login-card {
+            background: #16213e;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 400px;
+            box-sizing: border-box;
+            border: 1px solid #0f3460;
+        }
+
+        h2 {
+            margin-top: 0;
+            color: #00fff5; /* サイバー風のアクセントカラー */
+            text-align: center;
+            letter-spacing: 1px;
+        }
+
+        p {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+            text-align: center;
+            margin-bottom: 25px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            font-size: 0.85rem;
+            color: #00fff5;
+            margin-bottom: 5px;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            font-size: 16px;
+            background: #0f3460;
+            border: 1px solid #4e4e6a;
+            border-radius: 4px;
+            color: white;
+            box-sizing: border-box;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #00fff5;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #00fff5;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #00bfb6;
+        }
+
+        #errorMsg {
+            color: #ff4d4d;
+            font-size: 0.9rem;
+            text-align: center;
+            margin-top: 15px;
+            font-weight: bold;
+        }
+
+        .link-row {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .link-row a {
+            color: #00fff5;
+            font-size: 0.85rem;
+            text-decoration: none;
+        }
+
+        .link-row a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="login-card">
+        <h2>ADMIN LOGIN</h2>
+        <p>chocoZAP SECURITY COMMAND CENTER</p>
+        
+        <div class="input-group">
+            <label for="username">管理者ID</label>
+            <input type="text" id="username" placeholder="admin" required>
+        </div>
+
+        <div class="input-group">
+            <label for="password">パスワード</label>
+            <input type="password" id="password" placeholder="••••••••" required>
+        </div>
+
+        <button type="button" onclick="handleLogin()">ログイン</button>
+        <div id="errorMsg"></div>
+
+        <div class="link-row">
+            <a href="/admin/register">新規管理者登録はこちら</a>
+        </div>
+    </div>
+
+    <script>
+        function handleLogin() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorMsg = document.getElementById('errorMsg');
+
+            if (!username || !password) {
+                errorMsg.innerText = "IDとパスワードを入力してください。";
+                return;
+            }
+
+            // FastAPIの認証APIへ送信
+            fetch('/api/admin/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: username, password: password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === "success") {
+                    // ログイン成功したらメインのダッシュボード（または管理画面）へリダイレクト
+                    window.location.href = "/";
+                } else {
+                    errorMsg.innerText = "認証失敗: " + (data.message || "IDまたはパスワードが間違っています。");
+                }
+            })
+            .catch(err => {
+                errorMsg.innerText = "通信エラーが発生しました。";
+                console.error(err);
+            });
+        }
+    </script>
+</body>
+</html>
