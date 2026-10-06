@@ -64,6 +64,14 @@ MACHINE_AREAS = {
 def init_database():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    """)
     
     # 会員マスタテーブル
     cursor.execute("""
@@ -408,6 +416,10 @@ class RegisterRequest(BaseModel):
     email: str
     image: str
 
+class AdminAuthRequest(BaseModel):
+    username: str
+    password: str
+
 @app.get("/register", response_class=HTMLResponse)
 def get_register_page(request: Request):
     return templates.TemplateResponse(request, "register.html", {})
@@ -586,6 +598,49 @@ def api_get_logs():
     logs = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return {"logs": logs}
+
+# =========================================================================
+# 🔑 管理者用：登録・ログインエンドポイント
+# =========================================================================
+
+# 管理者登録画面の表示
+@app.get("/admin/register", response_class=HTMLResponse)
+def get_admin_register_page(request: Request):
+    return templates.TemplateResponse(request, "admin_register.html", {})
+
+# 管理者登録API（平文でDBに保存）
+@app.post("/api/admin/register")
+def api_admin_register(data: AdminAuthRequest):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO admins (username, password) VALUES (?, ?)", (data.username, data.password))
+        conn.commit()
+        conn.close()
+        return {"status": "success"}
+    except sqlite3.IntegrityError:
+        return {"status": "error", "message": "このIDはすでに使われています"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# 管理者ログイン画面の表示
+@app.get("/admin/login", response_class=HTMLResponse)
+def get_admin_login_page(request: Request):
+    return templates.TemplateResponse(request, "admin_login.html", {})
+
+# 管理者ログイン認証API
+@app.post("/api/admin/login")
+def api_admin_login(data: AdminAuthRequest):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM admins WHERE username = ? AND password = ?", (data.username, data.password))
+    user = cursor.fetchone()
+    conn.close()
+
+    if user:
+        return {"status": "success"}
+    else:
+        return {"status": "error", "message": "IDまたはパスワードが違います"}
 
 # =========================================================================
 # 🏁 起動確認
