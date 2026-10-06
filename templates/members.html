@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>MEMBER MANAGEMENT - CHOCOZAP SECURITY</title>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --accent-lime-dark: #b5d432;
+            --danger-color: #ff2a5f;
+        }
+
+        /* 1. ページ全体を縦方向のFlexboxにしてフッターを底に沈める */
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding-top: 160px; /* 固定ヘッダー分の余白 */
+            padding-left: 20px;
+            padding-right: 20px;
+            box-sizing: border-box;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
+            
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 2. メインコンテンツが少ない時でもフッターを押し下げるラッパー */
+        .page-content {
+            flex: 1;
+        }
+
+        /* 共通のリキッドグラスヘッダー */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .nav-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+        .nav-btn:hover::after {
+            background-color: var(--accent-lime);
+        }
+
+        /* 共通パネル・テーブル */
+        .cyber-panel-full {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 24px;
+            max-width: 1024px;
+            margin: 0 auto 40px auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .cyber-panel-full h2 {
+            margin-top: 0;
+            font-size: 0.9rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-main);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: monospace;
+        }
+
+        .cyber-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .cyber-table th, .cyber-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9rem;
+            text-align: left;
+        }
+        .cyber-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-weight: 800;
+        }
+        .cyber-table td {
+            text-align: center;
+            color: var(--text-main);
+        }
+
+        .btn-delete {
+            background: #ffe6eb;
+            color: var(--danger-color);
+            border: 1px solid #ffadb8;
+            padding: 4px 12px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-weight: 800;
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            transition: all 0.2s ease;
+        }
+        .btn-delete:hover {
+            background: var(--danger-color);
+            color: #fff;
+        }
+
+        /* 共通フッター＆ティッカー */
+        .site-footer {
+            background: var(--surface-card);
+            border-top: 1px solid var(--border-color);
+            margin-top: auto; /* コンテンツが少なくても自動で最下部に配置 */
+            padding: 30px 20px;
+            box-sizing: border-box;
+            width: 100%;
+            margin-left: -20px; /* <body>の左右パディングを打ち消して画面幅いっぱいに広げる */
+            padding-left: calc(20px + 20px);
+            padding-right: calc(20px + 20px);
+        }
+
+        .ticker-wrap {
+            width: 100%;
+            overflow: hidden;
+            background: var(--surface-alt);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+            white-space: nowrap;
+            box-sizing: border-box;
+            font-family: monospace;
+            font-size: 0.75rem;
+            font-weight: 800;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 30px;
+        }
+
+        .ticker-move {
+            display: inline-block;
+            animation: marquee 25s linear infinite;
+        }
+
+        .ticker-item {
+            display: inline-block;
+            padding: 0 30px;
+        }
+
+        .ticker-item span {
+            color: var(--text-main);
+            background: var(--accent-lime);
+            padding: 1px 6px;
+            border-radius: 2px;
+            margin-left: 6px;
+        }
+
+        @keyframes marquee {
+            0% { transform: translate3d(0, 0, 0); }
+            100% { transform: translate3d(-50%, 0, 0); }
+        }
+
+        .footer-content {
+            max-width: 1024px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .footer-brand-mini {
+            font-weight: 900;
+            color: var(--text-main);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+    <header class="site-header">
+        <div class="header-brand">
+            <h1>CHOCOZAP SECURITY</h1>
+        </div>
+        <nav class="nav-container">
+            <a href="/" class="nav-btn">&larr; LIVE MONITOR</a>
+            <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+        </nav>
+    </header>
+
+    <!-- メインコンテンツを包むラッパー -->
+    <div class="page-content">
+        <div class="cyber-panel-full" style="margin-top: 20px;">
+            <h2>REGISTERED MEMBERS MANAGEMENT</h2>
+            <table class="cyber-table">
+                <thead>
+                    <tr>
+                        <th>Member ID</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>QR Token</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="members-table-body">
+                    <tr>
+                        <td colspan="5" style="color: var(--text-muted); padding: 20px;">LOADING DATABASE...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- フッター -->
+    <footer class="site-footer">
+        <div class="ticker-wrap">
+            <div class="ticker-move">
+                <div class="ticker-item">DATABASE STATUS: <span>CONNECTED</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">MEMBER REGISTRY: <span>ACTIVE</span></div>
+                <div class="ticker-item">DATABASE STATUS: <span>CONNECTED</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">MEMBER REGISTRY: <span>ACTIVE</span></div>
+            </div>
+        </div>
+        <div class="footer-content">
+            <div class="footer-brand-mini">CHOCOZAP SECURITY COMMAND CENTER</div>
+            <div>&copy; 2026 CHOCOZAP SECURITY // ALL RIGHTS RESERVED.</div>
+        </div>
+    </footer>
+
+    <script>
+        async function fetchMembers() {
+            try {
+                const response = await fetch('/api/admin/members');
+                const data = await response.json();
+                const tbody = document.getElementById('members-table-body');
+                tbody.innerHTML = '';
+
+                if (data.members.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">登録されている会員はいません。</td></tr>`;
+                    return;
+                }
+
+                data.members.forEach(member => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td style="font-family: monospace; font-weight: 700;">${member.member_id}</td>
+                        <td style="font-weight: 700;">${member.name}</td>
+                        <td style="font-family: monospace;">${member.email}</td>
+                        <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">${member.qr_token.substring(0, 15)}...</td>
+                        <td><button class="btn-delete" onclick="deleteMember('${member.member_id}', '${member.name}')">DELETE</button></td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error("会員データの取得に失敗しました", err);
+            }
+        }
+
+        async function deleteMember(memberId, memberName) {
+            if (!confirm(`本当に「${memberName} (${memberId})」を削除しますか？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/members/${memberId}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    alert(result.message);
+                    fetchMembers();
+                } else {
+                    alert(`エラー: ${result.message}`);
+                }
+            } catch (err) {
+                alert("削除処理中に通信エラーが発生しました。");
+            }
+        }
+
+        fetchMembers();
+    </script>
+</body>
+</html>
