@@ -42,7 +42,7 @@ FACE_TIMEOUT = 5.0
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-SENDER_EMAIL = "your_email@gmail.com"  # 送信元のメールアドレス
+SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
 SENDER_PASSWORD = "your_app_password"   # アプリパスワード等
 
 LINE_X = 320
