@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>管理者新規登録 - chocoZAP SECURITY</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .card {
+            background: #16213e;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 400px;
+            box-sizing: border-box;
+            border: 1px solid #0f3460;
+        }
+        h2 { margin-top: 0; color: #00fff5; text-align: center; }
+        .input-group { margin-bottom: 20px; text-align: left; }
+        label { display: block; font-size: 0.85rem; color: #00fff5; margin-bottom: 5px; }
+        input {
+            width: 100%; padding: 12px; font-size: 16px;
+            background: #0f3460; border: 1px solid #4e4e6a;
+            border-radius: 4px; color: white; box-sizing: border-box;
+        }
+        button {
+            width: 100%; padding: 12px; background: #00fff5;
+            color: #1a1a2e; border: none; border-radius: 4px;
+            font-size: 16px; font-weight: bold; cursor: pointer;
+        }
+        button:hover { background: #00bfb6; }
+        #msg { text-align: center; margin-top: 15px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>ADMIN REGISTER</h2>
+        <div class="input-group">
+            <label>管理者ID</label>
+            <input type="text" id="username" placeholder="admin" required>
+        </div>
+        <div class="input-group">
+            <label>パスワード</label>
+            <input type="password" id="password" placeholder="password" required>
+        </div>
+        <button type="button" onclick="registerAdmin()">登録する</button>
+        <div id="msg"></div>
+    </div>
+
+    <script>
+        function registerAdmin() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const msg = document.getElementById('msg');
+
+            if (!username || !password) {
+                msg.style.color = "#ff4d4d";
+                msg.innerText = "IDとパスワードを入力してください。";
+                return;
+            }
+
+            fetch('/api/admin/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: username, password: password })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === "success") {
+                    msg.style.color = "#00fff5";
+                    msg.innerText = "登録成功！ログイン画面へ移動します...";
+                    setTimeout(() => { window.location.href = "/admin/login"; }, 1500);
+                } else {
+                    msg.style.color = "#ff4d4d";
+                    msg.innerText = "エラー: " + data.message;
+                }
+            });
+        }
+    </script>
+</body>
+</html>
