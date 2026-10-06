@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>chocoZAP会員登録</title>
+    <style>
+        /* ページ全体を縦方向のFlexboxにしてフッターを底に沈める */
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body { 
+            font-family: 'Helvetica Neue', Arial, sans-serif; 
+            text-align: center; 
+            background: #f4f7f6; 
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        /* メインコンテンツ部分が少ない時でもフッターを押し下げる */
+        .page-content {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px 0;
+        }
+
+        .container { 
+            background: white; 
+            max-width: 500px; 
+            width: 100%;
+            margin: auto; 
+            padding: 30px; 
+            border-radius: 10px; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1); 
+            box-sizing: border-box;
+        }
+
+        h2 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+
+        p {
+            font-size: 0.95rem;
+            color: #555;
+            line-height: 1.5;
+        }
+
+        input, button { 
+            width: 90%; 
+            padding: 12px; 
+            margin: 10px 0; 
+            font-size: 16px; 
+            border-radius: 5px; 
+            border: 1px solid #ccc; 
+            box-sizing: border-box;
+        }
+
+        button { 
+            background: #007bff; 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+            font-weight: bold;
+        }
+
+        button:hover { 
+            background: #0056b3; 
+        }
+
+        video, canvas { 
+            width: 100%; 
+            max-width: 400px; 
+            border-radius: 5px; 
+            background: #000; 
+        }
+
+        #resultMsg { 
+            font-weight: bold; 
+            margin-top: 15px; 
+            font-size: 0.95rem;
+        }
+
+        /* フッター */
+        footer {
+            margin-top: auto;
+            padding: 15px;
+            font-size: 0.85rem;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="page-content">
+        <div class="container">
+            <h2>chocoZAP会員登録</h2>
+            <p>お名前、メールアドレスを入力し、カメラで顔を撮影して登録してください。</p>
+            
+            <input type="text" id="name" placeholder="お名前（例: 山田 太郎）" required><br>
+            <input type="email" id="email" placeholder="メールアドレス（例: test@example.com）" required><br>
+            
+            <div style="margin: 15px 0;">
+                <video id="video" autoplay playsinline></video><br>
+                <button type="button" onclick="takeSnapshot()">顔を撮影して登録</button>
+                <canvas id="canvas" style="display:none;"></canvas>
+            </div>
+            
+            <div id="resultMsg"></div>
+        </div>
+    </div>
+
+    <footer>
+        &copy; CHOCOZAP SECURITY All Rights Reserved.
+    </footer>
+
+    <script>
+        // Webカメラの起動
+        const video = document.getElementById('video');
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => { video.srcObject = stream; })
+            .catch(err => { alert("カメラの起動に失敗しました: " + err); });
+
+        function takeSnapshot() {
+            const name = document.getElementById('name').value;
+            const email = document.getElementById('email').value;
+            const msgDiv = document.getElementById('resultMsg');
+
+            if (!name || !email) {
+                alert("お名前とメールアドレスを入力してください！");
+                return;
+            }
+
+            msgDiv.style.color = "#007bff";
+            msgDiv.innerText = "登録処理中...（顔の特徴量を抽出しています）";
+
+            const canvas = document.getElementById('canvas');
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            const imageDataUrl = canvas.toDataURL('image/jpeg');
+
+            // サーバーへ送信
+            fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, email: email, image: imageDataUrl })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === "success") {
+                    msgDiv.style.color = "#28a745";
+                    msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
+                } else {
+                    msgDiv.style.color = "#dc3545";
+                    msgDiv.innerText = "登録失敗: " + data.message;
+                }
+            })
+            .catch(err => {
+                msgDiv.style.color = "#dc3545";
+                msgDiv.innerText = "通信エラーが発生しました。";
+                console.error(err);
+            });
+        }
+    </script>
+</body>
+</html>

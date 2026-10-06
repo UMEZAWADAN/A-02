@@ -2,264 +2,515 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>ジム セキュリティ＆人流監視ダッシュボード（テスト用）</title>
+    <title>CHOCOZAP SECURITY</title>
     <style>
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --accent-lime-dark: #b5d432;
+            --danger-color: #ff2a5f;
+        }
+
         body {
-            font-family: 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f4f6f9;
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
             margin: 0;
-            padding: 20px;
-            color: #333;
+            padding-top: 160px;
+            padding-bottom: 0; /* フッターのために下パディングを調整 */
+            padding-left: 20px;
+            padding-right: 20px;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
         }
-        h1 {
-            text-align: center;
-            color: #2c3e50;
-            margin-bottom: 10px;
-        }
-        .mode-banner {
-            text-align: center;
-            font-size: 1.3rem;
-            font-weight: bold;
-            padding: 10px;
-            margin-bottom: 20px;
-            border-radius: 6px;
-            background-color: #34495e;
-            color: white;
-        }
-        .mode-banner span {
-            color: #f1c40f;
-        }
-        .container {
+
+        /* 限界まで透かした超ガラス風ヘッダー */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
             display: flex;
-            gap: 20px;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+        
+        .header-brand h1 span {
+            background: var(--accent-lime);
+            padding: 0 10px;
+            color: #000;
+            -webkit-text-stroke: 0px transparent;
+            border-radius: 2px;
+            display: inline-block;
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .nav-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+        .nav-btn:hover::after {
+            background-color: var(--accent-lime);
+        }
+
+        .system-status-bar {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            background: var(--surface-card);
+            max-width: 650px;
+            margin: 0 auto 30px auto;
+            padding: 10px 20px;
+            border-radius: 2px;
+            border: 1px solid var(--border-color);
+        }
+        .system-status-bar span {
+            color: #000;
+            font-weight: 900;
+            background: var(--accent-lime);
+            padding: 2px 8px;
+            border-radius: 50px;
+        }
+
+        .grid-container {
+            display: flex;
+            gap: 24px;
             justify-content: center;
             flex-wrap: wrap;
-            margin-bottom: 20px;
+            max-width: 1100px;
+            margin: 0 auto 24px auto;
         }
-        .panel {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            width: 520px;
-            box-sizing: border-box;
-        }
-        .panel h2 {
-            margin-top: 0;
-            font-size: 1.2rem;
-            border-bottom: 2px solid #3498db;
-            padding-bottom: 8px;
-            color: #2980b9;
-        }
-        .panel-full {
-            background: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 1060px;
-            margin: 0 auto;
-            box-sizing: border-box;
-        }
-        .panel-full h2 {
-            margin-top: 0;
-            font-size: 1.2rem;
-            border-bottom: 2px solid #2ecc71;
-            padding-bottom: 8px;
-            color: #27ae60;
-        }
-        .video-box {
-            text-align: center;
-            background: #000;
+
+        .cyber-panel {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
             border-radius: 4px;
+            padding: 24px;
+            width: 500px;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+            transition: all 0.3s ease;
+        }
+        .cyber-panel:hover {
+            border-color: #bbb;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.05);
+        }
+
+        .cyber-panel-full {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 24px;
+            max-width: 1024px;
+            margin: 0 auto 40px auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .cyber-panel h2, .cyber-panel-full h2 {
+            margin-top: 0;
+            font-size: 0.9rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-main);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: monospace;
+        }
+
+        .video-box {
+            background: #000;
+            border-radius: 2px;
             overflow: hidden;
-            margin-bottom: 15px;
+            border: 1px solid var(--border-color);
+            position: relative;
+            margin-bottom: 14px;
+        }
+        .video-box::before {
+            content: "LIVE_FEED // SECURE_CHANNEL";
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: var(--accent-lime);
+            color: #000;
+            font-size: 0.65rem;
+            font-family: monospace;
+            padding: 3px 10px;
+            border-radius: 50px;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            z-index: 2;
         }
         .video-box img {
             width: 100%;
             height: auto;
             display: block;
         }
-        .status-table, .history-table, .machine-table {
+
+        .cyber-table {
             width: 100%;
             border-collapse: collapse;
         }
-        .status-table th, .status-table td,
-        .history-table th, .history-table td,
-        .machine-table th, .machine-table td {
-            padding: 8px 12px;
-            border-bottom: 1px solid #ddd;
+        .cyber-table th, .cyber-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9rem;
             text-align: left;
-            font-size: 0.95rem;
         }
-        .history-table th, .machine-table th {
-            background-color: #f8f9fa;
-            color: #555;
+        .cyber-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
             text-align: center;
+            font-weight: 800;
         }
-        .history-table td, .machine-table td {
+        .cyber-table td {
             text-align: center;
+            color: var(--text-main);
         }
-        .badge {
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            color: white;
-        }
-        .badge-in { background-color: #27ae60; }
-        .badge-out { background-color: #7f8c8d; }
-        .badge-alert { background-color: #e74c3c; }
-        .badge-normal { background-color: #3498db; }
-        .badge-machine-free { background-color: #95a5a6; }
-        .badge-machine-using { background-color: #27ae60; }
-        .badge-machine-overtime { background-color: #e74c3c; }
 
-        .alert-box {
-            background-color: #e74c3c;
-            color: white;
+        .badge {
+            padding: 3px 10px;
+            border-radius: 50px;
+            font-size: 0.7rem;
+            font-weight: 800;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-block;
+        }
+        .badge-in { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
+        .badge-out { background: var(--surface-alt); color: var(--text-muted); border: 1px solid var(--border-color); }
+        .badge-alert { background: #ffe6eb; color: var(--danger-color); border: 1px solid #ffadb8; border-radius: 2px; }
+        .badge-normal { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
+        
+        .badge-machine-free { background: var(--surface-alt); color: var(--text-muted); border-radius: 50px; }
+        .badge-machine-using { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); border-radius: 50px; }
+        .badge-machine-overtime { background: #ffe6eb; color: var(--danger-color); border: 1px solid #ffadb8; border-radius: 2px; }
+
+        .cyber-alert {
+            background: #ffe6eb;
+            border: 1px solid #ffadb8;
+            color: var(--danger-color);
             text-align: center;
-            padding: 10px;
-            border-radius: 4px;
-            font-weight: bold;
-            margin-top: 15px;
+            padding: 12px;
+            border-radius: 2px;
+            font-weight: 900;
+            font-size: 0.85rem;
+            margin-top: 16px;
             display: none;
+            font-family: monospace;
+            letter-spacing: 0.08em;
         }
-        .alert-box.active {
+        .cyber-alert.active {
             display: block;
         }
-        /* モードによる表示切り替え用スタイル */
-        .mode-section {
-            display: none;
+
+        .mode-section { display: none; }
+        .mode-section.active-mode { display: block; }
+
+        /* フッター周辺のデザインと無限ティッカー */
+        .site-footer {
+            background: var(--surface-card);
+            border-top: 1px solid var(--border-color);
+            margin-top: 60px;
+            padding: 30px 20px;
+            box-sizing: border-box;
         }
-        .mode-section.active-mode {
-            display: block;
+
+        .ticker-wrap {
+            width: 100%;
+            overflow: hidden;
+            background: var(--surface-alt);
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+            white-space: nowrap;
+            box-sizing: border-box;
+            font-family: monospace;
+            font-size: 0.75rem;
+            font-weight: 800;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 30px;
+        }
+
+        .ticker-move {
+            display: inline-block;
+            animation: marquee 25s linear infinite;
+        }
+
+        .ticker-item {
+            display: inline-block;
+            padding: 0 30px;
+        }
+
+        .ticker-item span {
+            color: var(--text-main);
+            background: var(--accent-lime);
+            padding: 1px 6px;
+            border-radius: 2px;
+            margin-left: 6px;
+        }
+
+        @keyframes marquee {
+            0% { transform: translate3d(0, 0, 0); }
+            100% { transform: translate3d(-50%, 0, 0); }
+        }
+
+        .footer-content {
+            max-width: 1024px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .footer-brand-mini {
+            font-weight: 900;
+            color: var(--text-main);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
     </style>
 </head>
 <body>
 
-    <h1>🏋️‍♂️ ジム セキュリティ・人流監視ダッシュボード</h1>
-    <div class="mode-banner">
-        現在のテストモード: <span id="current-mode-text">入口ゲートモード (Entrance)</span> — <small style="color: #ddd;">※ターミナルで Enter を押すと切替</small>
+    <header class="site-header">
+        <div class="header-brand">
+            <h1>CHOCOZAP SECURITY</h1>
+        </div>
+        <nav class="nav-container">
+            <a href="/admin/members" class="nav-btn">MEMBER MANAGEMENT</a>
+            <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+        </nav>
+    </header>
+
+    <div class="system-status-bar">
+        ACTIVE_MODE: <span id="current-mode-text">ENTRANCE_GATE</span> &nbsp;|&nbsp; <span>[ENTER TO SWITCH]</span>
     </div>
 
-    <div class="container">
-        <!-- カメラ＆映像表示パネル（1台の映像を共通利用） -->
-        <div class="panel">
-            <h2>🎥 ライブカメラ映像 (1台を共有)</h2>
+    <div class="grid-container">
+        <div class="cyber-panel">
+            <h2>LIVE STREAM MONITOR</h2>
             <div class="video-box">
-                <!-- 共通のエンドポイント /video から映像を取得 -->
-                <img src="/video" alt="Live Stream">
+                <img id="video-stream" alt="Live Stream">
             </div>
-            <div style="font-size: 0.85rem; color: #666; text-align: center;">
-                💡 ターミナル（黒い画面）で <b>Enterキー</b> を押すと、<br>この映像のAI処理が「入口」と「ルーム」に切り替わります。
+            <div style="font-size: 0.75rem; color: var(--text-muted); text-align: center; font-family: monospace;">
+                // TERMINAL: PRESS [ENTER] TO TOGGLE AI PIPELINE
             </div>
         </div>
 
-        <!-- 右側：モードに応じて切り替わる詳細ステータスパネル -->
-        <div class="panel">
-            <!-- 入口モード用ステータス -->
+        <div class="cyber-panel">
             <div id="section-entrance" class="mode-section active-mode">
-                <h2>🚪 入口ゲート情報 (YOLO + QR)</h2>
-                <table class="status-table">
+                <h2>ENTRANCE GATE (YOLO + QR)</h2>
+                <table class="cyber-table" style="margin-top: 10px;">
                     <tr>
-                        <th>入館数 (IN)</th>
-                        <td id="in-count" style="color: #27ae60; font-weight: bold; font-size: 1.2rem;">0</td>
+                        <td style="color: var(--text-muted); text-align: left;">入館数 (IN)</td>
+                        <td id="in-count" style="color: #2d5000; font-weight: 900; font-size: 1.2rem; font-family: monospace;">0</td>
                     </tr>
                     <tr>
-                        <th>退館数 (OUT)</th>
-                        <td id="out-count" style="color: #c0392b; font-weight: bold; font-size: 1.2rem;">0</td>
+                        <td style="color: var(--text-muted); text-align: left;">退館数 (OUT)</td>
+                        <td id="out-count" style="font-weight: 900; font-size: 1.2rem; font-family: monospace;">0</td>
                     </tr>
                     <tr>
-                        <th>直近のQR</th>
-                        <td id="last-qr">None</td>
+                        <td style="color: var(--text-muted); text-align: left;">直近のQRコード</td>
+                        <td id="last-qr" style="font-family: monospace; color: #2d5000; font-weight: 700;">None</td>
                     </tr>
                 </table>
-                <div id="co-trailing-alert" class="alert-box">🚨 共連れ（不正入館）検知アラート！</div>
+                <div id="co-trailing-alert" class="cyber-alert">CRITICAL: CO-TRAILING DETECTED</div>
             </div>
 
-            <!-- トレーニングルームモード用ステータス -->
             <div id="section-room" class="mode-section">
-                <h2>👤 トレーニングルーム情報 (顔識別)</h2>
-                <table class="status-table">
+                <h2>TRAINING ROOM (FACE RECOGNITION)</h2>
+                <table class="cyber-table" style="margin-top: 10px;">
                     <tr>
-                        <th>追跡中ユーザー</th>
-                        <td id="user-name">Guest</td>
+                        <td style="color: var(--text-muted); text-align: left;">追跡中ユーザー</td>
+                        <td id="user-name" style="font-weight: 700; font-family: monospace;">Guest</td>
                     </tr>
                     <tr>
-                        <th>滞在時間</th>
-                        <td id="accumulated-time">0 秒</td>
+                        <td style="color: var(--text-muted); text-align: left;">滞在時間</td>
+                        <td id="accumulated-time" style="font-family: monospace;">0 秒</td>
                     </tr>
                     <tr>
-                        <th>ステータス</th>
-                        <td id="overtime-status" style="font-weight: bold;">通常</td>
+                        <td style="color: var(--text-muted); text-align: left;">ステータス</td>
+                        <td id="overtime-status" style="font-weight: 700; color: #2d5000; font-family: monospace;">NORMAL</td>
                     </tr>
                 </table>
 
-                <h3 style="margin-top: 20px; font-size: 1rem; color: #2980b9; border-bottom: 1px solid #3498db; padding-bottom: 4px;">🏋️‍♂️ マシン別 占有監視</h3>
-                <table class="machine-table" style="margin-top: 10px;">
+                <h2 style="margin-top: 24px; font-size: 0.85rem;">MACHINE OCCUPANCY STATUS</h2>
+                <table class="cyber-table" style="margin-top: 8px;">
                     <thead>
                         <tr>
-                            <th>マシン名</th>
-                            <th>利用者</th>
-                            <th>経過</th>
-                            <th>状態</th>
+                            <th>Machine</th>
+                            <th>User</th>
+                            <th>Duration</th>
+                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody id="machine-table-body">
                         <tr>
-                            <td colspan="4" style="color: #888;">待機中...</td>
+                            <td colspan="4" style="color: var(--text-muted);">STANDBY...</td>
                         </tr>
                     </tbody>
                 </table>
-                <div id="machine-alert-box" class="alert-box">⚠️ マシンの長時間占有を検知しました！</div>
+                <div id="machine-alert-box" class="cyber-alert">WARNING: MACHINE OVERTIME</div>
             </div>
         </div>
     </div>
 
-    <!-- 📋 直近の通行・違反履歴パネル -->
-    <div class="panel-full">
-        <h2>📋 直近の入退館・違反履歴 (リアルタイム)</h2>
-        <table class="history-table">
+    <div class="cyber-panel-full">
+        <h2>REAL-TIME ACCESS LOGS</h2>
+        <table class="cyber-table" style="margin-top: 10px;">
             <thead>
                 <tr>
-                    <th>日時</th>
-                    <th>方向</th>
-                    <th>会員ID</th>
-                    <th>判定ステータス</th>
+                    <th>Timestamp</th>
+                    <th>Direction</th>
+                    <th>Member ID</th>
+                    <th>Status</th>
                 </tr>
             </thead>
             <tbody id="logs-table-body">
                 <tr>
-                    <td colspan="4" style="color: #888; padding: 15px;">データを待機中...</td>
+                    <td colspan="4" style="color: var(--text-muted); padding: 20px;">WAITING FOR DATA STREAM...</td>
                 </tr>
             </tbody>
         </table>
     </div>
 
+    <!-- フッター＆横スクロールティッカー -->
+    <footer class="site-footer">
+        <div class="ticker-wrap">
+            <div class="ticker-move">
+                <div class="ticker-item">SYSTEM STATUS: <span>ONLINE</span></div>
+                <div class="ticker-item">AI PIPELINE: <span>ACTIVE</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">AI MONITOR: <span>RUNNING</span></div>
+                <!-- 無限ループ用の複製 -->
+                <div class="ticker-item">SYSTEM STATUS: <span>ONLINE</span></div>
+                <div class="ticker-item">AI PIPELINE: <span>ACTIVE</span></div>
+                <div class="ticker-item">SECURE PROTOCOL: <span>ENCRYPTED</span></div>
+                <div class="ticker-item">AI MONITOR: <span>RUNNING</span></div>
+            </div>
+        </div>
+        <div class="footer-content">
+            <div class="footer-brand-mini">CHOCOZAP SECURITY COMMAND CENTER</div>
+            <div>&copy; 2026 CHOCOZAP SECURITY // ALL RIGHTS RESERVED.</div>
+        </div>
+    </footer>
+
     <script>
+        function reloadVideoStream() {
+            const videoBox = document.querySelector('.video-box');
+            if (videoBox) {
+                videoBox.innerHTML = '';
+                const newImg = document.createElement('img');
+                newImg.id = 'video-stream';
+                newImg.alt = 'Live Stream';
+                newImg.src = "/video?t=" + new Date().getTime();
+                videoBox.appendChild(newImg);
+            }
+        }
+
+        window.addEventListener('pageshow', () => reloadVideoStream());
+        window.addEventListener('DOMContentLoaded', () => reloadVideoStream());
+
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
         ws.onmessage = function(event) {
             const data = JSON.parse(event.data);
 
-            // 現在のモード表示の切り替え
             const modeText = document.getElementById('current-mode-text');
             const secEntrance = document.getElementById('section-entrance');
             const secRoom = document.getElementById('section-room');
 
             if (data.active_mode === 'entrance') {
-                modeText.innerText = "入口ゲートモード (Entrance)";
+                modeText.innerText = "ENTRANCE_GATE";
                 secEntrance.classList.add('active-mode');
                 secRoom.classList.remove('active-mode');
             } else {
-                modeText.innerText = "トレーニングルームモード (Room)";
+                modeText.innerText = "TRAINING_ROOM";
                 secRoom.classList.add('active-mode');
                 secEntrance.classList.remove('active-mode');
             }
 
-            // 入口データの更新
             document.getElementById('in-count').innerText = data.in_count;
             document.getElementById('out-count').innerText = data.out_count;
             document.getElementById('last-qr').innerText = data.last_qr;
@@ -271,20 +522,18 @@
                 alertBox.classList.remove('active');
             }
 
-            // ルームデータの更新
             document.getElementById('user-name').innerText = data.user_name;
             document.getElementById('accumulated-time').innerText = data.accumulated_time + ' 秒';
 
             const statusTd = document.getElementById('overtime-status');
             if (data.is_overtime) {
-                statusTd.innerText = "オーバータイム（制限超過）";
-                statusTd.style.color = "#e74c3c";
+                statusTd.innerText = "OVERTIME";
+                statusTd.style.color = "var(--danger-color)";
             } else {
-                statusTd.innerText = "通常";
-                statusTd.style.color = "#27ae60";
+                statusTd.innerText = "NORMAL";
+                statusTd.style.color = "#2d5000";
             }
 
-            // マシン別占有状況の更新
             if (data.machines && data.machines.length > 0) {
                 const machineTbody = document.getElementById('machine-table-body');
                 machineTbody.innerHTML = '';
@@ -292,18 +541,18 @@
 
                 data.machines.forEach(machine => {
                     const tr = document.createElement('tr');
-                    let statusBadge = '<span class="badge badge-machine-free">空き</span>';
+                    let statusBadge = '<span class="badge badge-machine-free">FREE</span>';
                     if (machine.status === 'using') {
-                        statusBadge = '<span class="badge badge-machine-using">利用中</span>';
+                        statusBadge = '<span class="badge badge-machine-using">USING</span>';
                     } else if (machine.status === 'overtime') {
-                        statusBadge = '<span class="badge badge-machine-overtime">超過警報</span>';
+                        statusBadge = '<span class="badge badge-machine-overtime">OVERTIME</span>';
                         hasMachineAlert = true;
                     }
 
                     tr.innerHTML = `
-                        <td style="font-weight: bold;">${machine.name}</td>
-                        <td>${machine.user}</td>
-                        <td>${machine.duration}秒</td>
+                        <td style="font-weight: 700;">${machine.name}</td>
+                        <td style="font-family: monospace;">${machine.user}</td>
+                        <td style="font-family: monospace;">${machine.duration}s</td>
                         <td>${statusBadge}</td>
                     `;
                     machineTbody.appendChild(tr);
@@ -317,23 +566,22 @@
                 }
             }
 
-            // 履歴テーブルの更新
             if (data.logs && data.logs.length > 0) {
                 const tbody = document.getElementById('logs-table-body');
                 tbody.innerHTML = '';
                 data.logs.forEach(log => {
                     const tr = document.createElement('tr');
                     const dirBadge = log.direction === 'IN' 
-                        ? '<span class="badge badge-in">IN (入館)</span>' 
-                        : '<span class="badge badge-out">OUT (退館)</span>';
+                        ? '<span class="badge badge-in">IN</span>' 
+                        : '<span class="badge badge-out">OUT</span>';
                     const alertBadge = log.is_alert === 1 
-                        ? '<span class="badge badge-alert">🚨 共連れ・不正</span>' 
-                        : '<span class="badge badge-normal">正常通行</span>';
+                        ? '<span class="badge badge-alert">ALERT</span>' 
+                        : '<span class="badge badge-normal">NORMAL</span>';
 
                     tr.innerHTML = `
-                        <td>${log.timestamp}</td>
+                        <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${log.timestamp}</td>
                         <td>${dirBadge}</td>
-                        <td style="font-weight: bold;">${log.member_id}</td>
+                        <td style="font-family: monospace; font-weight: 700;">${log.member_id}</td>
                         <td>${alertBadge}</td>
                     `;
                     tbody.appendChild(tr);
@@ -341,10 +589,7 @@
             }
         };
 
-        ws.onclose = function() {
-            console.log("WebSocket接続が切れました。");
-        };
+        ws.onclose = () => console.log("WebSocket disconnected.");
     </script>
-    
 </body>
 </html>
