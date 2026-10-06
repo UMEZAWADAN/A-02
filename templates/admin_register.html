@@ -2,69 +2,267 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>管理者新規登録 - chocoZAP SECURITY</title>
+    <title>ADMIN REGISTER - CHOCOZAP SECURITY</title>
     <style>
-        html, body {
-            height: 100%;
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --danger-color: #ff2a5f;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
             margin: 0;
-            background: #1a1a2e;
-            color: #e0e0e0;
-            font-family: 'Helvetica Neue', Arial, sans-serif;
+            padding-top: 160px;
+            padding-bottom: 60px;
+            padding-left: 20px;
+            padding-right: 20px;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        /* 共通ヘッダー（index.htmlと完全統一） */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+        
+        .header-brand h1 span {
+            background: var(--accent-lime);
+            padding: 0 10px;
+            color: #000;
+            -webkit-text-stroke: 0px transparent;
+            border-radius: 2px;
+            display: inline-block;
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+
+        /* フォーム用パネル */
+        .main-container {
+            flex: 1;
             display: flex;
             justify-content: center;
             align-items: center;
         }
-        .card {
-            background: #16213e;
-            padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+        .cyber-panel {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 30px;
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
             box-sizing: border-box;
-            border: 1px solid #0f3460;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
         }
-        h2 { margin-top: 0; color: #00fff5; text-align: center; }
-        .input-group { margin-bottom: 20px; text-align: left; }
-        label { display: block; font-size: 0.85rem; color: #00fff5; margin-bottom: 5px; }
+
+        .cyber-panel h2 {
+            margin-top: 0;
+            font-size: 0.9rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-main);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            font-family: monospace;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            font-size: 0.75rem;
+            font-family: monospace;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 8px;
+            font-weight: 800;
+        }
+
         input {
-            width: 100%; padding: 12px; font-size: 16px;
-            background: #0f3460; border: 1px solid #4e4e6a;
-            border-radius: 4px; color: white; box-sizing: border-box;
+            width: 100%;
+            padding: 12px;
+            font-size: 0.95rem;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            color: var(--text-main);
+            box-sizing: border-box;
+            font-family: monospace;
         }
-        button {
-            width: 100%; padding: 12px; background: #00fff5;
-            color: #1a1a2e; border: none; border-radius: 4px;
-            font-size: 16px; font-weight: bold; cursor: pointer;
+
+        input:focus {
+            outline: none;
+            border-color: var(--text-main);
+            background: #fff;
         }
-        button:hover { background: #00bfb6; }
-        #msg { text-align: center; margin-top: 15px; font-weight: bold; }
+
+        .cyber-btn {
+            width: 100%;
+            padding: 12px;
+            background: var(--accent-lime);
+            color: #000;
+            border: none;
+            border-radius: 2px;
+            font-size: 0.8rem;
+            font-weight: 900;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .cyber-btn:hover {
+            background: #b5d432;
+        }
+
+        #message {
+            font-size: 0.8rem;
+            text-align: center;
+            margin-top: 15px;
+            font-weight: 800;
+            font-family: monospace;
+        }
+
+        .link-row {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .link-row a {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-decoration: none;
+            letter-spacing: 0.05em;
+            border-bottom: 1px dotted var(--text-muted);
+        }
+
+        .link-row a:hover {
+            color: var(--text-main);
+            border-bottom-color: var(--text-main);
+        }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h2>ADMIN REGISTER</h2>
-        <div class="input-group">
-            <label>管理者ID</label>
-            <input type="text" id="username" placeholder="admin" required>
+
+    <header class="site-header">
+        <div class="header-brand">
+            <h1>CHOCOZAP <span>SECURITY</span></h1>
         </div>
-        <div class="input-group">
-            <label>パスワード</label>
-            <input type="password" id="password" placeholder="password" required>
+        <nav class="nav-container">
+            <a href="/" class="nav-btn">LIVE MONITOR</a>
+            <a href="/admin/members" class="nav-btn">MEMBERS</a>
+            <a href="/admin/logs" class="nav-btn">LOGS</a>
+            <a href="/admin/login" class="nav-btn">LOGIN</a>
+        </nav>
+    </header>
+
+    <div class="main-container">
+        <div class="cyber-panel">
+            <h2>ADMIN REGISTRATION // NEW</h2>
+            <p style="font-size: 0.8rem; color: var(--text-muted); font-family: monospace; margin-bottom: 24px;">
+                // REGISTER NEW COMMANDER CREDENTIALS
+            </p>
+            
+            <div class="input-group">
+                <label for="username">New Admin ID</label>
+                <input type="text" id="username" placeholder="admin123" required>
+            </div>
+
+            <div class="input-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="••••••••" required>
+            </div>
+
+            <button type="button" class="cyber-btn" onclick="handleRegister()">REGISTER ADMIN</button>
+            <div id="message"></div>
+
+            <div class="link-row">
+                <a href="/admin/login"><< BACK TO LOGIN</a>
+            </div>
         </div>
-        <button type="button" onclick="registerAdmin()">登録する</button>
-        <div id="msg"></div>
     </div>
 
     <script>
-        function registerAdmin() {
+        function handleRegister() {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
-            const msg = document.getElementById('msg');
+            const message = document.getElementById('message');
 
             if (!username || !password) {
-                msg.style.color = "#ff4d4d";
-                msg.innerText = "IDとパスワードを入力してください。";
+                message.style.color = "var(--danger-color)";
+                message.innerText = "ERROR: ID AND PASSWORD REQUIRED.";
                 return;
             }
 
@@ -73,16 +271,23 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: username, password: password })
             })
-            .then(res => res.json())
+            .then(response => response.json())
             .then(data => {
                 if (data.status === "success") {
-                    msg.style.color = "#00fff5";
-                    msg.innerText = "登録成功！ログイン画面へ移動します...";
-                    setTimeout(() => { window.location.href = "/admin/login"; }, 1500);
+                    message.style.color = "#2d5000";
+                    message.innerText = "SUCCESS: REDIRECTING TO LOGIN...";
+                    setTimeout(() => {
+                        window.location.href = "/admin/login";
+                    }, 1500);
                 } else {
-                    msg.style.color = "#ff4d4d";
-                    msg.innerText = "エラー: " + data.message;
+                    message.style.color = "var(--danger-color)";
+                    message.innerText = "ERROR: " + (data.message || "REGISTRATION FAILED.");
                 }
+            })
+            .catch(err => {
+                message.style.color = "var(--danger-color)";
+                message.innerText = "CRITICAL: NETWORK ERROR.";
+                console.error(err);
             });
         }
     </script>

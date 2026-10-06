@@ -16,15 +16,18 @@ import uuid
 from datetime import datetime
 from queue import Queue
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel
 import uvicorn
+from starlette.middleware.sessions import SessionMiddleware
 
 # テンプレートエンジンの準備
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+app.add_middleware(SessionMiddleware, secret_key="your-secret-key-here")
 
 # グローバル変数として追加
 clients = []
@@ -57,6 +60,18 @@ MACHINE_AREAS = {
     "bench_press": {"name": "ベンチプレス", "box": [50, 100, 250, 350], "limit": 15.0},
     "squat_rack": {"name": "スクワットラック", "box": [390, 100, 590, 350], "limit": 20.0}
 }
+
+# =========================================================================
+# 💾 リクエスト用データモデル（先頭側に定義）
+# =========================================================================
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    image: str
+
+class AdminAuthRequest(BaseModel):
+    username: str
+    password: str
 
 # =========================================================================
 # 💾 データベース自動初期化
@@ -124,7 +139,7 @@ class SystemStateManager:
         self.co_trailing_alert = False
         
         # ルーム監視用の状態管理（1:N識別対応）
-        self.active_users = {} # 検出中のユーザー情報を保持 {track_or_face_id: {"name": ..., "accumulated_time": ..., ...}}
+        self.active_users = {} 
         
         self.machine_states = {
             k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None} 
@@ -204,7 +219,6 @@ class SystemStateManager:
                 "status": st["status"]
             })
 
-        # DBから直近の履歴を取得
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -235,7 +249,7 @@ current_output_frame = None
 render_lock = threading.Lock()
 
 # =========================================================================
-# 🎥 カメラ処理ループ（1台のカメラでモードに応じてAI処理を切り替え）
+# 🎥 カメラ処理ループ
 # =========================================================================
 def camera_processing_loop():
     global current_output_frame, yolo_model
@@ -257,8 +271,6 @@ def camera_processing_loop():
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました。")
     print(" 🖥️  ブラウザ (http://localhost:8000/) で映像を確認してください。")
-    print(" ⌨️  【ターミナルで Enter キーを押す】と、")
-    print("     [ 入口モード ] ⇄ [ ルームモード ] が切り替わります！")
     print("====================================================\n")
 
     while cap.isOpened():
@@ -272,9 +284,6 @@ def camera_processing_loop():
         with mode_lock:
             mode = active_mode
 
-        # -----------------------------------------------------------------
-        # モード A: 入口ゲート処理 (QR & YOLO)
-        # -----------------------------------------------------------------
         if mode == "entrance":
             qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
             if qr_bbox is not None and len(qr_bbox) > 0:
@@ -295,7 +304,6 @@ def camera_processing_loop():
 
                 for box, track_id in zip(boxes, track_ids):
                     x_center = int((box[0] + box[2]) / 2)
-                    y_center = int((box[1] + box[3]) / 2)
                     cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
 
                     if track_id in track_history:
@@ -304,11 +312,9 @@ def camera_processing_loop():
                             time_since_qr = current_time - state.last_qr_time
                             if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR":
                                 state.register_pass("IN", state.last_scanned_qr, 0)
-                                print(f"✅ [入館許可] 会員 {state.last_scanned_qr}")
                             else:
                                 state.set_alert(True)
                                 state.register_pass("IN", "Unknown", 1)
-                                print("🚨 [共連れ検知 または 未認証]")
                         elif prev_x > LINE_X and x_center <= LINE_X:
                             state.register_pass("OUT", "Unknown", 0)
                             state.set_alert(False)
@@ -318,9 +324,6 @@ def camera_processing_loop():
             cv2.putText(frame, "MODE: [ENTRANCE]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-        # -----------------------------------------------------------------
-        # モード B: トレーニングルーム処理 (1:N 顔認識 & マシンROI) 【ステップ4】
-        # -----------------------------------------------------------------
         else:
             for m_key, m_info in MACHINE_AREAS.items():
                 bx1, by1, bx2, by2 = m_info["box"]
@@ -329,7 +332,6 @@ def camera_processing_loop():
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
                 cv2.putText(frame, f"{m_info['name']} ({int(st['duration'])}s)", (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            # データベースから全会員の顔特徴量をロード
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -345,7 +347,6 @@ def camera_processing_loop():
                 best_match_name = "Guest"
                 highest_sim = 0.0
 
-                # 登録されている全会員とコサイン類似度を計算 (1:N 照合)
                 for member in registered_members:
                     db_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
                     sim = np.dot(db_embedding, face.embedding) / (np.linalg.norm(db_embedding) * np.linalg.norm(face.embedding))
@@ -354,7 +355,6 @@ def camera_processing_loop():
                         highest_sim = sim
                         best_match_name = member['name']
 
-                # 類似度が閾値 (例: 0.55以上) を超えた場合に本人と認定
                 if highest_sim > 0.55:
                     detected_user_name = best_match_name
                     target_face_box = face.bbox.astype(int)
@@ -368,10 +368,8 @@ def camera_processing_loop():
                             active_machine_key = m_key
                             break
 
-                    # マシン利用状況の更新
                     state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
                     
-                    # 画面に名前と類似度を描画
                     x1, y1, x2, y2 = target_face_box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.putText(frame, f"{detected_user_name} ({int(highest_sim*100)}%)", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -379,7 +377,6 @@ def camera_processing_loop():
             state.push_update()
             cv2.putText(frame, "MODE: [ROOM (1:N Matching)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        # Web配信用のフレームを更新
         with render_lock:
             current_output_frame = frame.copy()
 
@@ -387,9 +384,6 @@ def camera_processing_loop():
 
     cap.release()
 
-# =========================================================================
-# ⌨️ ターミナルでの Enter キー監視スレッド（モード切替用）
-# =========================================================================
 def console_switcher_thread():
     global active_mode
     while True:
@@ -398,27 +392,18 @@ def console_switcher_thread():
             with mode_lock:
                 if active_mode == "entrance":
                     active_mode = "room"
-                    print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】 に切り替えました（1:N 顔認識マシン監視）")
+                    print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】")
                 else:
                     active_mode = "entrance"
-                    print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】 に切り替えました（QR & 人流）")
+                    print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】")
             state.push_update()
         except Exception:
             break
 
 # =========================================================================
-# 🚀 FastAPI サーバー & ストリーミング・登録API設定
+# 🚀 FastAPI ルーティング & API設定
 # =========================================================================
 connected_websockets = []
-
-class RegisterRequest(BaseModel):
-    name: str
-    email: str
-    image: str
-
-class AdminAuthRequest(BaseModel):
-    username: str
-    password: str
 
 @app.get("/register", response_class=HTMLResponse)
 def get_register_page(request: Request):
@@ -469,7 +454,7 @@ def api_register(data: RegisterRequest):
         msg['From'] = SENDER_EMAIL
         msg['To'] = data.email
 
-        body = MIMEText(f"{data.name} 様\n\nジムの新規ご登録ありがとうございます。\nあなた専用の入館用QRコードを発行いたしました。\n添付のQRコードを受付のカメラにかざしてご入館ください。")
+        body = MIMEText(f"{data.name} 様\n\nジムの新規ご登録ありがとうございます。\nあなた専用の入館用QRコードを発行いたしました。")
         msg.attach(body)
 
         img_attachment = MIMEImage(img_io.read(), name="gym_qr_code.png")
@@ -486,16 +471,6 @@ def api_register(data: RegisterRequest):
         print(f"登録エラー: {e}")
         return {"status": "error", "message": str(e)}
 
-def generate_stream():
-    while True:
-        with render_lock:
-            if current_output_frame is not None:
-                ret, buffer = cv2.imencode('.jpg', current_output_frame)
-                if ret:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        time.sleep(0.04)
-
 @app.get("/video")
 async def video_feed():
     async def generate_async_stream():
@@ -507,7 +482,6 @@ async def video_feed():
                 if ret:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            # 非同期で少し待機し、CPU負荷を下げつつ次のフレームへ
             await asyncio.sleep(0.04)
 
     return StreamingResponse(
@@ -517,7 +491,7 @@ async def video_feed():
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
             "Expires": "0",
-            "Connection": "close"  # 👈 ここがポイント：切断時にコネクションを強制終了させる
+            "Connection": "close"
         }
     )
 
@@ -547,15 +521,46 @@ async def ws_broadcast_loop():
 async def startup_event():
     asyncio.create_task(ws_broadcast_loop())
 
+# ==========================================
+# 🏠 メインダッシュボード（ログイン保護付き）
+# ==========================================
 @app.get("/", response_class=HTMLResponse)
-def get_dashboard(request: Request):
+async def read_index(request: Request):
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    
     return templates.TemplateResponse(request, "index.html", {})
+
+# ==========================================
+# 🔑 管理者認証・ログイン/ログアウトAPI
+# ==========================================
+@app.post("/api/admin/login")
+def api_admin_login(request: Request, data: AdminAuthRequest):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM admins WHERE username = ? AND password = ?", (data.username, data.password))
+    user = cursor.fetchone()
+    conn.close()
+
+    if user:
+        # セッションにユーザー名を保存してログイン状態にする
+        request.session["admin_user"] = data.username
+        return {"status": "success"}
+    else:
+        return {"status": "error", "message": "IDまたはパスワードが違います"}
+
+@app.get("/admin/logout")
+async def admin_logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/admin/login", status_code=303)
 
 # =========================================================================
 # 👥 管理者用：会員管理・一覧用エンドポイント
 # =========================================================================
 @app.get("/admin/members", response_class=HTMLResponse)
 def get_admin_members_page(request: Request):
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "members.html", {})
 
 @app.get("/api/admin/members")
@@ -563,7 +568,6 @@ def api_get_members():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    # セキュリティや一覧性のために顔特徴量(face_embedding)以外の情報を取得
     cursor.execute("SELECT member_id, name, email, qr_token FROM members")
     members = [dict(row) for row in cursor.fetchall()]
     conn.close()
@@ -586,6 +590,8 @@ def api_delete_member(member_id: str):
 # =========================================================================
 @app.get("/admin/logs", response_class=HTMLResponse)
 def get_admin_logs_page(request: Request):
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "logs.html", {})
 
 @app.get("/api/admin/logs")
@@ -593,22 +599,18 @@ def api_get_logs():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    # データベースから最新の入退館ログを最大100件取得
     cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
     logs = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return {"logs": logs}
 
 # =========================================================================
-# 🔑 管理者用：登録・ログインエンドポイント
+# 🔑 管理者用：登録・ログイン画面
 # =========================================================================
-
-# 管理者登録画面の表示
 @app.get("/admin/register", response_class=HTMLResponse)
 def get_admin_register_page(request: Request):
     return templates.TemplateResponse(request, "admin_register.html", {})
 
-# 管理者登録API（平文でDBに保存）
 @app.post("/api/admin/register")
 def api_admin_register(data: AdminAuthRequest):
     try:
@@ -623,24 +625,9 @@ def api_admin_register(data: AdminAuthRequest):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# 管理者ログイン画面の表示
 @app.get("/admin/login", response_class=HTMLResponse)
 def get_admin_login_page(request: Request):
     return templates.TemplateResponse(request, "admin_login.html", {})
-
-# 管理者ログイン認証API
-@app.post("/api/admin/login")
-def api_admin_login(data: AdminAuthRequest):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM admins WHERE username = ? AND password = ?", (data.username, data.password))
-    user = cursor.fetchone()
-    conn.close()
-
-    if user:
-        return {"status": "success"}
-    else:
-        return {"status": "error", "message": "IDまたはパスワードが違います"}
 
 # =========================================================================
 # 🏁 起動確認
