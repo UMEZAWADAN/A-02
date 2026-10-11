@@ -112,6 +112,19 @@
             background-color: var(--accent-lime);
         }
 
+        /* 🆕 ログアウトボタン用の特別スタイル */
+        .nav-btn-logout {
+            border-color: rgba(255, 42, 95, 0.4);
+            color: var(--danger-color);
+        }
+        .nav-btn-logout:hover {
+            background: rgba(255, 42, 95, 0.1);
+            border-color: var(--danger-color);
+        }
+        .nav-btn-logout:hover::after {
+            background-color: var(--danger-color);
+        }
+
         .system-status-bar {
             display: flex;
             justify-content: center;
@@ -359,6 +372,8 @@
         <nav class="nav-container">
             <a href="/admin/members" class="nav-btn">MEMBER MANAGEMENT</a>
             <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+            <!-- 🆕 追加したログアウトボタン -->
+            <a href="/admin/logout" class="nav-btn nav-btn-logout">LOGOUT</a>
         </nav>
     </header>
 

@@ -138,6 +138,16 @@ class SystemStateManager:
         self.last_qr_time = 0.0
         self.co_trailing_alert = False
         
+        # 入口の1:1照合用に直近の会員情報と顔特徴量を保持
+        self.last_member_id = None
+        self.last_member_embedding = None
+
+        self.last_member_appearance = {
+            "upper_color": None,
+            "lower_color": None,
+            "aspect_ratio": 0.0
+        }
+        
         # ルーム監視用の状態管理（1:N識別対応）
         self.active_users = {} 
         
@@ -153,15 +163,22 @@ class SystemStateManager:
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT member_id, name FROM members WHERE qr_token = ?", (qr_data,))
+            cursor.execute("SELECT member_id, name, face_embedding FROM members WHERE qr_token = ?", (qr_data,))
             member = cursor.fetchone()
             conn.close()
 
             if member:
                 self.last_scanned_qr = f"{member['name']} ({member['member_id']})"
+                self.last_member_id = member['member_id']
+                if member['face_embedding']:
+                    self.last_member_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
+                else:
+                    self.last_member_embedding = None
                 print(f"🔓 【QR認証成功】 歓迎: {member['name']} (ID: {member['member_id']})")
             else:
                 self.last_scanned_qr = "Invalid QR"
+                self.last_member_id = None
+                self.last_member_embedding = None
                 print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data}")
 
             self.last_qr_time = current_time
@@ -248,6 +265,43 @@ state = SystemStateManager()
 current_output_frame = None
 render_lock = threading.Lock()
 
+def extract_appearance_features(frame, box):
+    """
+    YOLOのバウンディングボックスから上着・下半身の色や体型比率を簡易抽出する関数
+    box: [x1, y1, x2, y2]
+    """
+    try:
+        x1, y1, x2, y2 = map(int, box[:4])
+        h, w, _ = frame.shape
+        # 画面内に収まるようクリッピング
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        
+        person_crop = frame[y1:y2, x1:x2]
+        if person_crop.size == 0:
+            return None, None, 1.0
+
+        crop_h, crop_w, _ = person_crop.shape
+        aspect_ratio = crop_h / float(crop_w if crop_w > 0 else 1)
+
+        # 上半身（上から0%〜50%の領域）を上着の色として抽出
+        upper_body = person_crop[0:int(crop_h * 0.5), :]
+        if upper_body.size > 0:
+            upper_color = np.mean(upper_body, axis=(0, 1)) # [B, G, R]
+        else:
+            upper_color = np.array([0, 0, 0], dtype=float)
+
+        # 下半身（50%〜100%の領域）をズボンの色として抽出
+        lower_body = person_crop[int(crop_h * 0.5):crop_h, :]
+        if lower_body.size > 0:
+            lower_color = np.mean(lower_body, axis=(0, 1))
+        else:
+            lower_color = np.array([0, 0, 0], dtype=float)
+
+        return upper_color, lower_color, aspect_ratio
+    except Exception:
+        return None, None, 1.0
+
 # =========================================================================
 # 🎥 カメラ処理ループ
 # =========================================================================
@@ -294,6 +348,8 @@ def camera_processing_loop():
                     if qr_data != state.last_scanned_qr or (current_time - state.last_qr_time) > DUPLICATE_QR_WINDOW:
                         state.process_qr(qr_data, current_time)
 
+            faces = face_app.get(frame)
+
             yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
             cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
             cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
@@ -310,18 +366,39 @@ def camera_processing_loop():
                         prev_x = track_history[track_id]
                         if prev_x < LINE_X and x_center >= LINE_X:
                             time_since_qr = current_time - state.last_qr_time
-                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR":
+                            
+                            face_matched = False
+                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_member_embedding is not None:
+                                for face in faces:
+                                    fx1, fy1, fx2, fy2 = face.bbox.astype(int)
+                                    if box[0] <= fx1 and fx2 <= box[2]:
+                                        sim = np.dot(state.last_member_embedding, face.embedding) / (
+                                            np.linalg.norm(state.last_member_embedding) * np.linalg.norm(face.embedding)
+                                        )
+                                        if sim > 0.55:
+                                            face_matched = True
+                                            break
+
+                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR" and face_matched:
                                 state.register_pass("IN", state.last_scanned_qr, 0)
+
+                                upper_c, lower_c, aspect = extract_appearance_features(frame, box)
+                                state.last_member_appearance = {
+                                    "upper_color": upper_c,
+                                    "lower_color": lower_c,
+                                    "aspect_ratio": aspect
+                                }
+
                             else:
                                 state.set_alert(True)
-                                state.register_pass("IN", "Unknown", 1)
+                                state.register_pass("IN", "Unknown / Face Mismatch", 1)
                         elif prev_x > LINE_X and x_center <= LINE_X:
                             state.register_pass("OUT", "Unknown", 0)
                             state.set_alert(False)
 
                     track_history[track_id] = x_center
 
-            cv2.putText(frame, "MODE: [ENTRANCE]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
         else:
@@ -373,6 +450,27 @@ def camera_processing_loop():
                     x1, y1, x2, y2 = target_face_box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.putText(frame, f"{detected_user_name} ({int(highest_sim*100)}%)", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            if detected_user_name == "Guest" and yolo_model is not None:
+                yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
+                if yolo_results[0].boxes is not None and len(yolo_results[0].boxes) > 0:
+                    for box in yolo_results[0].boxes.xyxy.cpu().numpy():
+                        u_col, l_col, aspect = extract_appearance_features(frame, box)
+                        last_app = state.last_member_appearance
+                        if last_app["upper_color"] is not None and u_col is not None:
+                            if np.linalg.norm(last_app["upper_color"] - u_col) < 50.0 and state.last_scanned_qr != "None":
+                                inferred_name = state.last_scanned_qr.split(" (")[0]
+                                px1, py1, px2, py2 = map(int, box[:4])
+                                fx, fy = int((px1 + px2) / 2), int(py2)
+                                for m_key, m_info in MACHINE_AREAS.items():
+                                    bx1, by1, bx2, by2 = m_info["box"]
+                                    if bx1 <= fx <= bx2 and by1 <= fy <= by2:
+                                        active_machine_key = m_key
+                                        break
+                                state.update_machine_occupancy(active_machine_key, inferred_name, current_time)
+                                cv2.rectangle(frame, (px1, py1), (px2, py2), (255, 165, 0), 2)
+                                cv2.putText(frame, f"{inferred_name} (Re-ID)", (px1, py1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+                                break
 
             state.push_update()
             cv2.putText(frame, "MODE: [ROOM (1:N Matching)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
@@ -543,7 +641,6 @@ def api_admin_login(request: Request, data: AdminAuthRequest):
     conn.close()
 
     if user:
-        # セッションにユーザー名を保存してログイン状態にする
         request.session["admin_user"] = data.username
         return {"status": "success"}
     else:
