@@ -55,6 +55,7 @@ CAMERA_ID = 0  # 内蔵カメラ1台
 # 🪑 椅子・座り判定の設定
 SEAT_CLASSES = [56]           # COCO: 56=chair（普通の椅子のみ。ベンチ等も拾いたい場合は 13=bench, 57=couch を追加）
 ROOM_MODEL_PATH = "yolo11n.pt"  # 椅子の検出が不安定なら "yolo11s.pt" や "yolo11m.pt" に変更（精度↑・速度↓）
+SEAT_RELEASE_GRACE = 5.0      # 座っていない状態がこの秒数続いたら、利用終了（マシンを空きに戻す）
 ROOM_CONF = 0.20              # ルームモードの検出しきい値（低めにして椅子の取りこぼしを減らす）
 SIT_OVERLAP_RATIO = 0.25      # 人の下半身ボックスが座面ボックスと重なっている割合の下限
 
@@ -163,7 +164,7 @@ class SystemStateManager:
         self.active_users = {} 
         
         self.machine_states = {
-            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None} 
+            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None, "last_seen": None} 
             for k in MACHINE_LIMITS.keys()
         }
         
@@ -245,6 +246,7 @@ class SystemStateManager:
             for m_key in self.machine_states.keys():
                 if m_key == active_machine_key and user_name != "Guest":
                     m_state = self.machine_states[m_key]
+                    m_state["last_seen"] = current_time
                     if m_state["user"] != user_name:
                         m_state["user"] = user_name
                         m_state["start_time"] = current_time
@@ -258,6 +260,16 @@ class SystemStateManager:
                         m_state["status"] = "overtime"
                     else:
                         m_state["status"] = "using"
+
+    def release_idle_machines(self, current_time):
+        """座っている検知が SEAT_RELEASE_GRACE 秒途切れたら利用終了。戻ってきたら0秒から計測し直す"""
+        with self._lock:
+            for m_state in self.machine_states.values():
+                if m_state["user"] != "-" and m_state["last_seen"] is not None \
+                        and (current_time - m_state["last_seen"]) > SEAT_RELEASE_GRACE:
+                    print(f"🪑 【利用終了】 {m_state['user']} / 占有 {m_state['duration']:.0f}秒")
+                    m_state.update({"user": "-", "duration": 0.0, "status": "free",
+                                    "start_time": None, "last_seen": None})
 
     def push_update(self):
         machines_payload = []
@@ -556,6 +568,7 @@ def camera_processing_loop():
                 status_text = f"User: {detected_user_name} | Sitting: {is_sitting}"
                 cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
+            state.release_idle_machines(current_time)
             state.push_update()
             cv2.putText(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
