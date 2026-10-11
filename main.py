@@ -55,11 +55,10 @@ CAMERA_ID = 0  # 内蔵カメラ1台
 active_mode = "entrance"
 mode_lock = threading.Lock()
 
-# 🏋️‍♂️ マシンエリアの定義
-# 🏋️‍♂️ マシンエリアの定義
-MACHINE_AREAS = {
-    "bench_press": {"name": "ベンチプレス", "box": [50, 20, 250, 460], "limit": 15.0},
-    "squat_rack": {"name": "スクワットラック", "box": [390, 20, 590, 460], "limit": 20.0}
+# 🏋️‍♂️ マシン・椅子の管理情報
+MACHINE_LIMITS = {
+    "bench_press": {"name": "ベンチプレス", "limit": 15.0},
+    "squat_rack": {"name": "スクワットラック", "limit": 20.0}
 }
 
 # =========================================================================
@@ -123,7 +122,7 @@ def init_database():
 
 init_database()
 
-print(">> [1/3] YOLO（人流解析）モデルを読み込み中...")
+print(">> [1/3] YOLO（人・椅子検出）モデルを読み込み中...")
 yolo_model = None
 qr_detector = cv2.QRCodeDetector()
 
@@ -149,12 +148,12 @@ class SystemStateManager:
             "aspect_ratio": 0.0
         }
         
-        # ルーム監視用の状態管理（1:N識別対応）
+        # ルーム監視用の状態管理
         self.active_users = {} 
         
         self.machine_states = {
             k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None} 
-            for k in MACHINE_AREAS.keys()
+            for k in MACHINE_LIMITS.keys()
         }
         
         self.update_queue = Queue()
@@ -220,7 +219,7 @@ class SystemStateManager:
                         if m_state["start_time"] is not None:
                             m_state["duration"] = current_time - m_state["start_time"]
                     
-                    limit = MACHINE_AREAS[m_key]["limit"]
+                    limit = MACHINE_LIMITS[m_key]["limit"]
                     if m_state["duration"] > limit:
                         m_state["status"] = "overtime"
                     else:
@@ -228,7 +227,7 @@ class SystemStateManager:
 
     def push_update(self):
         machines_payload = []
-        for key, info in MACHINE_AREAS.items():
+        for key, info in MACHINE_LIMITS.items():
             st = self.machine_states[key]
             machines_payload.append({
                 "name": info["name"],
@@ -267,14 +266,9 @@ current_output_frame = None
 render_lock = threading.Lock()
 
 def extract_appearance_features(frame, box):
-    """
-    YOLOのバウンディングボックスから上着・下半身の色や体型比率を簡易抽出する関数
-    box: [x1, y1, x2, y2]
-    """
     try:
         x1, y1, x2, y2 = map(int, box[:4])
         h, w, _ = frame.shape
-        # 画面内に収まるようクリッピング
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
         
@@ -285,14 +279,12 @@ def extract_appearance_features(frame, box):
         crop_h, crop_w, _ = person_crop.shape
         aspect_ratio = crop_h / float(crop_w if crop_w > 0 else 1)
 
-        # 上半身（上から0%〜50%の領域）を上着の色として抽出
         upper_body = person_crop[0:int(crop_h * 0.5), :]
         if upper_body.size > 0:
-            upper_color = np.mean(upper_body, axis=(0, 1)) # [B, G, R]
+            upper_color = np.mean(upper_body, axis=(0, 1))
         else:
             upper_color = np.array([0, 0, 0], dtype=float)
 
-        # 下半身（50%〜100%の領域）をズボンの色として抽出
         lower_body = person_crop[int(crop_h * 0.5):crop_h, :]
         if lower_body.size > 0:
             lower_color = np.mean(lower_body, axis=(0, 1))
@@ -324,8 +316,7 @@ def camera_processing_loop():
 
     track_history = {}
     print("\n====================================================")
-    print(" 📹 カメラ処理ループが稼働しました。")
-    print(" 🖥️  ブラウザ (http://localhost:8000/) で映像を確認してください。")
+    print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
 
     while cap.isOpened():
@@ -403,13 +394,7 @@ def camera_processing_loop():
             cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
         else:
-            for m_key, m_info in MACHINE_AREAS.items():
-                bx1, by1, bx2, by2 = m_info["box"]
-                st = state.machine_states[m_key]
-                color = (0, 0, 255) if st["status"] == "overtime" else (255, 165, 0)
-                cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
-                cv2.putText(frame, f"{m_info['name']} ({int(st['duration'])}s)", (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
+            # ＝ トレーニングルームモード（椅子検知 ＋ 座り判定）＝
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -418,40 +403,25 @@ def camera_processing_loop():
             conn.close()
 
             faces = face_app.get(frame)
-            active_machine_key = None
             detected_user_name = "Guest"
 
+            # 1. 顔による1:Nマッチング
             for face in faces:
-                best_match_name = "Guest"
                 highest_sim = 0.0
+                best_match_name = "Guest"
 
                 for member in registered_members:
                     db_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
                     sim = np.dot(db_embedding, face.embedding) / (np.linalg.norm(db_embedding) * np.linalg.norm(face.embedding))
-                    
                     if sim > highest_sim:
                         highest_sim = sim
                         best_match_name = member['name']
 
                 if highest_sim > 0.55:
                     detected_user_name = best_match_name
-                    target_face_box = face.bbox.astype(int)
-                    
-                    fx = int((target_face_box[0] + target_face_box[2]) / 2)
-                    fy = int(target_face_box[3])
-                    
-                    for m_key, m_info in MACHINE_AREAS.items():
-                        bx1, by1, bx2, by2 = m_info["box"]
-                        if bx1 <= fx <= bx2 and by1 <= fy <= by2:
-                            active_machine_key = m_key
-                            break
+                    break
 
-                    state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
-                    
-                    x1, y1, x2, y2 = target_face_box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, f"{detected_user_name} ({int(highest_sim*100)}%)", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
+            # 2. 顔で見つからない場合、服装（Re-ID）で判定
             if detected_user_name == "Guest" and yolo_model is not None:
                 yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
                 if yolo_results[0].boxes is not None and len(yolo_results[0].boxes) > 0:
@@ -460,21 +430,48 @@ def camera_processing_loop():
                         last_app = state.last_member_appearance
                         if last_app["upper_color"] is not None and u_col is not None:
                             if np.linalg.norm(last_app["upper_color"] - u_col) < 50.0 and state.last_scanned_qr != "None":
-                                inferred_name = state.last_scanned_qr.split(" (")[0]
-                                px1, py1, px2, py2 = map(int, box[:4])
-                                fx, fy = int((px1 + px2) / 2), int(py2)
-                                for m_key, m_info in MACHINE_AREAS.items():
-                                    bx1, by1, bx2, by2 = m_info["box"]
-                                    if bx1 <= fx <= bx2 and by1 <= fy <= by2:
-                                        active_machine_key = m_key
-                                        break
-                                state.update_machine_occupancy(active_machine_key, inferred_name, current_time)
-                                cv2.rectangle(frame, (px1, py1), (px2, py2), (255, 165, 0), 2)
-                                cv2.putText(frame, f"{inferred_name} (Re-ID)", (px1, py1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+                                detected_user_name = state.last_scanned_qr.split(" (")[0]
                                 break
 
+            # 3. YOLOで「椅子（class 56）」と「人（class 0）」を検出し、座っているかを判定
+            is_sitting = False
+            active_machine_key = "bench_press" # デフォルトのマシン
+
+            if yolo_model is not None:
+                # person(0) と chair(56) を同時に検出
+                yolo_all = yolo_model(frame, classes=[0, 56], verbose=False)
+                if yolo_all[0].boxes is not None and len(yolo_all[0].boxes) > 0:
+                    boxes = yolo_all[0].boxes.xyxy.cpu().numpy()
+                    classes = yolo_all[0].boxes.cls.cpu().numpy().astype(int)
+
+                    person_boxes = [boxes[i] for i, cls in enumerate(classes) if cls == 0]
+                    chair_boxes = [boxes[i] for i, cls in enumerate(classes) if cls == 56]
+
+                    # 人と椅子の重なり（座り判定）をチェック
+                    for p_box in person_boxes:
+                        px1, py1, px2, py2 = p_box
+                        p_center_x = (px1 + px2) / 2
+                        p_lower_y = py2  # 足元・腰付近の座標
+
+                        for c_box in chair_boxes:
+                            cx1, cy1, cx2, cy2 = c_box
+                            # 椅子のボックス範囲内に、人の中心Ｘと下半身付近が収まっているか
+                            if cx1 <= p_center_x <= cx2 and cy1 <= p_lower_y <= cy2 + 30:
+                                is_sitting = True
+                                break
+                        if is_sitting:
+                            break
+
+            # 4. 会員が検知されており、かつ「椅子に座っている」と判定されたときだけタイマー開始
+            if detected_user_name != "Guest" and is_sitting:
+                state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
+                cv2.putText(frame, f"Sitting & Using: {detected_user_name}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            else:
+                status_text = f"User: {detected_user_name} | Sitting: {is_sitting}"
+                cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
             state.push_update()
-            cv2.putText(frame, "MODE: [ROOM (1:N Matching)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         with render_lock:
             current_output_frame = frame.copy()
@@ -737,7 +734,6 @@ if __name__ == "__main__":
     switcher_thread = threading.Thread(target=console_switcher_thread, daemon=True)
     switcher_thread.start()
     
-    print("\n🚀 サーバーを完全にアップグレードしました！")
+    print("\n🚀 サーバーを椅子検知・座り判定モードで起動しました！")
     print("👉 ブラウザで http://localhost:8000/ を開いてダッシュボードを確認してください。")
-    print("👉 会員登録ページ: http://localhost:8000/register")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
