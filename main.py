@@ -65,6 +65,13 @@ SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れな
 POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
 KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
 SIT_THIGH_DROP_RATIO = 0.75   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
+REID_THRESHOLD = 0.70         # 服の色の類似度(0〜1)がこれ以上で「同じ人」とみなす（画面の color= を見て調整）
+REID_MARGIN = 0.10            # 2番目に似ている会員との差がこれ以上あるときだけ採用
+REID_INTERVAL = 1.0           # 顔で特定できないとき、服の色で推定する間隔（秒）
+REID_ADD_INTERVAL = 5.0       # 顔で特定できている間、座った姿の特徴量を追加する間隔（秒）
+REID_MAX_FEATS = 10           # 会員1人あたりに保持する特徴量の数
+REID_TTL_SECONDS = 3 * 3600   # 特徴量を使える期間（服装は日が変わると変わる）
+REID_MIN_W, REID_MIN_H = 40, 80   # これより小さい人からは特徴量を取らない
 IDENTITY_HOLD_SECONDS = 15.0  # 顔認識が外れても、直前に特定した会員をこの秒数は保持（座っている間は保持し続ける）
 SEAT_MEMORY_SECONDS = 10.0    # 椅子が検出できなくなっても、この秒数は直前の位置を覚えておく（座った人に隠れる対策）
 SEAT_OCCLUDED_RATIO = 0.15    # 人が椅子ボックスの面積のこれ以上に重なっていたら「隠れている」とみなし、椅子の記憶を保持
@@ -166,11 +173,6 @@ class SystemStateManager:
         self.last_member_id = None
         self.last_member_embedding = None
 
-        self.last_member_appearance = {
-            "upper_color": None,
-            "lower_color": None,
-            "aspect_ratio": 0.0
-        }
         
         # ルーム監視用の状態管理
         self.active_users = {} 
@@ -323,36 +325,6 @@ state = SystemStateManager()
 current_output_frame = None
 render_lock = threading.Lock()
 
-def extract_appearance_features(frame, box):
-    try:
-        x1, y1, x2, y2 = map(int, box[:4])
-        h, w, _ = frame.shape
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        
-        person_crop = frame[y1:y2, x1:x2]
-        if person_crop.size == 0:
-            return None, None, 1.0
-
-        crop_h, crop_w, _ = person_crop.shape
-        aspect_ratio = crop_h / float(crop_w if crop_w > 0 else 1)
-
-        upper_body = person_crop[0:int(crop_h * 0.5), :]
-        if upper_body.size > 0:
-            upper_color = np.mean(upper_body, axis=(0, 1))
-        else:
-            upper_color = np.array([0, 0, 0], dtype=float)
-
-        lower_body = person_crop[int(crop_h * 0.5):crop_h, :]
-        if lower_body.size > 0:
-            lower_color = np.mean(lower_body, axis=(0, 1))
-        else:
-            lower_color = np.array([0, 0, 0], dtype=float)
-
-        return upper_color, lower_color, aspect_ratio
-    except Exception:
-        return None, None, 1.0
-
 def cosine_sim(a, b):
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na == 0 or nb == 0:
@@ -420,6 +392,132 @@ class IdentityHolder:
             return self.name, True
         self.name = None
         return "Guest", False
+
+def _color_hist(region):
+    """領域の色の分布。照明が変わっても崩れにくいよう、「色み(r,g比)」と「明るさ」を分けて数える。
+    割合にしてから平方根を取る → 内積が類似度(0〜1)になる（長さ1）"""
+    px = region.reshape(-1, 3).astype(np.float32)       # B, G, R
+    total_rgb = px.sum(axis=1)
+    bright = px.max(axis=1)
+    bright_hist = np.histogram(bright, bins=4, range=(0, 256))[0].astype(np.float32)
+
+    dark = total_rgb < 120                               # 暗すぎる画素は色みが不安定なので別枠
+    chroma = np.zeros(5 * 5 + 1, np.float32)
+    chroma[-1] = dark.sum()
+    ok = ~dark
+    if ok.any():
+        r = px[ok, 2] / total_rgb[ok]
+        g = px[ok, 1] / total_rgb[ok]
+        ir = np.minimum((r * 5).astype(int), 4)
+        ig = np.minimum((g * 5).astype(int), 4)
+        chroma[:25] = np.bincount(ir * 5 + ig, minlength=25)
+    if chroma.sum() <= 0:
+        return None
+    chroma /= chroma.sum()
+    bright_hist /= max(bright_hist.sum(), 1.0)
+    return np.concatenate([np.sqrt(0.75) * np.sqrt(chroma), np.sqrt(0.25) * np.sqrt(bright_hist)]).astype(np.float32)
+
+def extract_body_feature(frame, box):
+    """人の枠から、上半身(胴)と下半身の服の色の分布を特徴量にする。OpenCVだけで動き、モデルのファイルは不要
+    背景が入りにくいよう、枠の左右の端は使わない。上半身60%・下半身40%の重みで、長さ1に正規化"""
+    H, W = frame.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in box[:4]]
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(W, x2), min(H, y2)
+    w, h = x2 - x1, y2 - y1
+    if w < REID_MIN_W or h < REID_MIN_H:
+        return None
+    cx1, cx2 = x1 + int(w * 0.2), x2 - int(w * 0.2)
+    upper = frame[y1 + int(h * 0.15):y1 + int(h * 0.5), cx1:cx2]
+    lower = frame[y1 + int(h * 0.5):y1 + int(h * 0.9), cx1:cx2]
+    if upper.size == 0 or lower.size == 0:
+        return None
+    hu, hl = _color_hist(upper), _color_hist(lower)
+    if hu is None or hl is None:
+        return None
+    return np.concatenate([np.sqrt(0.6) * hu, np.sqrt(0.4) * hl]).astype(np.float32)
+
+class ReIDGallery:
+    """会員ごとの全身特徴量を保持する（期限切れは使わない）"""
+    def __init__(self):
+        self.items = {}   # member_id -> {"name", "feats", "time"}
+
+    def add(self, member_id, name, feat, now):
+        e = self.items.setdefault(member_id, {"name": name, "feats": [], "time": now})
+        e["name"], e["time"] = name, now
+        e["feats"].append(feat)
+        if len(e["feats"]) > REID_MAX_FEATS:
+            e["feats"].pop(0)
+
+    def identify(self, feat, now):
+        """戻り値: (member_id, 名前, 類似度, 2位との差)。保持している会員がいなければ None"""
+        scores = []
+        for mid, e in self.items.items():
+            if now - e["time"] > REID_TTL_SECONDS:
+                continue
+            scores.append((max(float(np.dot(feat, f)) for f in e["feats"]), mid, e["name"]))
+        if not scores:
+            return None
+        scores.sort(reverse=True)
+        margin = scores[0][0] - scores[1][0] if len(scores) > 1 else 1.0
+        return scores[0][1], scores[0][2], scores[0][0], margin
+
+class BodyReID:
+    """顔で特定できないときに、服の色で「座っている人」が誰かを推定する"""
+    def __init__(self):
+        self.gallery = ReIDGallery()
+        self.last_add = 0.0
+        self.last_try = 0.0
+        self.result = None
+        self.result_time = 0.0
+        self.logged_name = None
+
+    def add_entrance(self, frame, box, member_id, name, now):
+        """入口で、QRと顔が一致した人の服の色を登録"""
+        if member_id is None:
+            return
+        feat = extract_body_feature(frame, box)
+        if feat is not None:
+            self.gallery.add(member_id, name, feat, now)
+
+    def resolve(self, frame, sit_box, is_sitting, face_name, face_id, face_center, now):
+        """戻り値: (使う名前, Re-IDで決めたか, 画面表示用の文字列)"""
+        if not is_sitting or sit_box is None:
+            self.result = None
+            return face_name, False, ""
+
+        # 顔の持ち主が「座っている人」と別人なら、その顔の名前は使わない
+        if face_name != "Guest":
+            inside = (face_center is not None
+                      and sit_box[0] <= face_center[0] <= sit_box[2]
+                      and sit_box[1] <= face_center[1] <= sit_box[3])
+            if not inside:
+                face_name, face_id = "Guest", None
+
+        if face_name != "Guest":
+            # 顔で特定できている間に、座った姿の服の色を追加（一定間隔）
+            if face_id is not None and now - self.last_add >= REID_ADD_INTERVAL:
+                self.last_add = now
+                feat = extract_body_feature(frame, sit_box)
+                if feat is not None:
+                    self.gallery.add(face_id, face_name, feat, now)
+            return face_name, False, ""
+
+        # 顔で特定できない：服の色で推定（一定間隔）
+        if now - self.last_try >= REID_INTERVAL:
+            self.last_try = now
+            feat = extract_body_feature(frame, sit_box)
+            self.result = self.gallery.identify(feat, now) if feat is not None else None
+            self.result_time = now
+        if self.result is not None and now - self.result_time <= REID_INTERVAL * 3:
+            _, name, score, margin = self.result
+            text = f"color={score:.2f}({name}) margin={margin:.2f}"
+            if score >= REID_THRESHOLD and margin >= REID_MARGIN:
+                if self.logged_name != name:
+                    print(f"🧍 服の色で特定: {name} (score={score:.2f}, margin={margin:.2f})")
+                    self.logged_name = name
+                return name, True, text
+            return "Guest", False, text
+        return "Guest", False, ""
 
 def _box_inter(a, b):
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -528,6 +626,7 @@ def camera_processing_loop():
     sit_confirmer = SitConfirmer()
     seat_memory = []
     identity_holder = IdentityHolder()
+    body_reid = BodyReID()
     sit_log = {"key": None, "time": 0.0}
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
@@ -610,12 +709,8 @@ def camera_processing_loop():
                                 print(f"✅ 【入場OK】 {state.last_scanned_qr} / 顔の類似度 {best_sim:.2f}")
                                 state.register_pass("IN", state.last_scanned_qr, 0)
 
-                                upper_c, lower_c, aspect = extract_appearance_features(frame, box)
-                                state.last_member_appearance = {
-                                    "upper_color": upper_c,
-                                    "lower_color": lower_c,
-                                    "aspect_ratio": aspect
-                                }
+                                body_reid.add_entrance(frame, box, state.last_member_id,
+                                                       state.last_scanned_qr.split(" (")[0], current_time)
                             else:
                                 print(f"🚨 【入場警告】 {reason}")
                                 state.set_alert(True)
@@ -640,11 +735,14 @@ def camera_processing_loop():
 
             faces = face_app.get(frame)
             detected_user_name = "Guest"
+            detected_member_id = None
+            matched_face_center = None
 
             # 1. 顔による1:Nマッチング
             for face in faces:
                 highest_sim = 0.0
                 best_match_name = "Guest"
+                best_match_id = None
 
                 for member in registered_members:
                     db_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
@@ -652,9 +750,12 @@ def camera_processing_loop():
                     if sim > highest_sim:
                         highest_sim = sim
                         best_match_name = member['name']
+                        best_match_id = member['member_id']
 
                 if highest_sim > FACE_MATCH_THRESHOLD:
                     detected_user_name = best_match_name
+                    detected_member_id = best_match_id
+                    matched_face_center = ((face.bbox[0] + face.bbox[2]) / 2, (face.bbox[1] + face.bbox[3]) / 2)
                     break
 
             # 2. 椅子と人（骨格つき）を検出。どちらもトラッカーなしのルーム専用モデルで、1フレーム1回
@@ -676,24 +777,20 @@ def camera_processing_loop():
             # 椅子は、座った人に隠れて検出が途切れても、直前の位置を覚えて使う
             seat_boxes = update_seat_memory(seat_memory, detected_seats, person_boxes, current_time)
 
-            # 3. 顔で見つからない場合、服装（Re-ID）で判定
-            if detected_user_name == "Guest" and state.last_scanned_qr not in ("None", "Invalid QR"):
-                last_app = state.last_member_appearance
-                if last_app["upper_color"] is not None:
-                    for box in person_boxes:
-                        u_col, _, _ = extract_appearance_features(frame, box)
-                        if u_col is not None and np.linalg.norm(last_app["upper_color"] - u_col) < 50.0:
-                            detected_user_name = state.last_scanned_qr.split(" (")[0]
-                            break
-
             # 座り判定（椅子との重なり＋腰の位置＋脚の曲がり）
             best = (False, -1.0, "no-person")
+            sit_box = None
             for box, kxy_i, kcf_i in persons:
                 res = evaluate_sitting(box, kxy_i, kcf_i, seat_boxes)
                 if (res[0], res[1]) > (best[0], best[1]):
                     best = res
+                    sit_box = box
             is_sitting, overlap, why = best
             active_machine_key = "bench_press"  # デフォルトのマシン
+
+            # 顔の持ち主が座っている人と別人なら名前を使わず、顔で特定できないときは服の色で推定
+            detected_user_name, reid_used, reid_text = body_reid.resolve(
+                frame, sit_box, is_sitting, detected_user_name, detected_member_id, matched_face_center, current_time)
 
             # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
             for box, kxy_i, kcf_i in persons:
@@ -709,6 +806,8 @@ def camera_processing_loop():
             cv2.putText(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
                                f"overlap={max(overlap, 0.0):.2f} why={why}",
                         (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            if reid_text:
+                cv2.putText(frame, reid_text, (20, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
             # 判定が変わったらターミナルにも出す（1秒に1回まで）
             log_key = (is_sitting, why)
@@ -719,7 +818,7 @@ def camera_processing_loop():
 
             # 顔認識が外れても、直前に特定した会員を保持（座っている間は保持し続ける）
             detected_user_name, identity_held = identity_holder.update(detected_user_name, is_sitting, current_time)
-            held_mark = " (face lost)" if identity_held else ""
+            held_mark = " (face lost)" if identity_held else (" (color)" if reid_used else "")
 
             # 5. 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
             sitting_now = detected_user_name != "Guest" and is_sitting
