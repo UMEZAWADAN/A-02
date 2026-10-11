@@ -51,6 +51,12 @@ SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
 LINE_X = 320
 CAMERA_ID = 0  # 内蔵カメラ1台
 
+# 🪑 椅子・座り判定の設定
+SEAT_CLASSES = [56]           # COCO: 56=chair（普通の椅子のみ。ベンチ等も拾いたい場合は 13=bench, 57=couch を追加）
+ROOM_MODEL_PATH = "yolo11n.pt"  # 椅子の検出が不安定なら "yolo11s.pt" や "yolo11m.pt" に変更（精度↑・速度↓）
+ROOM_CONF = 0.20              # ルームモードの検出しきい値（低めにして椅子の取りこぼしを減らす）
+SIT_OVERLAP_RATIO = 0.25      # 人の下半身ボックスが座面ボックスと重なっている割合の下限
+
 # 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
 active_mode = "entrance"
 mode_lock = threading.Lock()
@@ -295,6 +301,19 @@ def extract_appearance_features(frame, box):
     except Exception:
         return None, None, 1.0
 
+def is_person_sitting(p_box, seat_boxes):
+    """人の下半身（ボックスの下半分）が椅子/ベンチのボックスと十分重なっていれば「座っている」とみなす"""
+    px1, py1, px2, py2 = p_box
+    mid_y = py1 + (py2 - py1) * 0.5
+    lower_area = max(1.0, (px2 - px1) * (py2 - mid_y))
+    for sx1, sy1, sx2, sy2 in seat_boxes:
+        ix1, iy1 = max(px1, sx1), max(mid_y, sy1)
+        ix2, iy2 = min(px2, sx2), min(py2, sy2)
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        if inter / lower_area >= SIT_OVERLAP_RATIO:
+            return True
+    return False
+
 # =========================================================================
 # 🎥 カメラ処理ループ
 # =========================================================================
@@ -304,6 +323,8 @@ def camera_processing_loop():
     from insightface.app import FaceAnalysis
 
     yolo_model = YOLO("yolo11n.pt")
+    # ルームモード専用（.track() を一度も呼ばない＝トラッカーが付かないモデル）
+    room_model = YOLO(ROOM_MODEL_PATH)
     
     print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
@@ -421,48 +442,40 @@ def camera_processing_loop():
                     detected_user_name = best_match_name
                     break
 
-            # 2. 顔で見つからない場合、服装（Re-ID）で判定
-            if detected_user_name == "Guest" and yolo_model is not None:
-                yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
-                if yolo_results[0].boxes is not None and len(yolo_results[0].boxes) > 0:
-                    for box in yolo_results[0].boxes.xyxy.cpu().numpy():
-                        u_col, l_col, aspect = extract_appearance_features(frame, box)
-                        last_app = state.last_member_appearance
-                        if last_app["upper_color"] is not None and u_col is not None:
-                            if np.linalg.norm(last_app["upper_color"] - u_col) < 50.0 and state.last_scanned_qr != "None":
-                                detected_user_name = state.last_scanned_qr.split(" (")[0]
-                                break
+            # 2. 人・椅子を検出（ルーム専用モデルで、1フレーム1回だけ推論）
+            person_boxes = []
+            seat_boxes = []
+            det = room_model(frame, classes=[0] + SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
+            if det.boxes is not None and len(det.boxes) > 0:
+                for b, c in zip(det.boxes.xyxy.cpu().numpy(), det.boxes.cls.cpu().numpy().astype(int)):
+                    if c == 0:
+                        person_boxes.append(b)
+                    else:
+                        seat_boxes.append(b)
 
-            # 3. YOLOで「椅子（class 56）」と「人（class 0）」を検出し、座っているかを判定
-            is_sitting = False
-            active_machine_key = "bench_press" # デフォルトのマシン
-
-            if yolo_model is not None:
-                # person(0) と chair(56) を同時に検出
-                yolo_all = yolo_model(frame, classes=[0, 56], verbose=False)
-                if yolo_all[0].boxes is not None and len(yolo_all[0].boxes) > 0:
-                    boxes = yolo_all[0].boxes.xyxy.cpu().numpy()
-                    classes = yolo_all[0].boxes.cls.cpu().numpy().astype(int)
-
-                    person_boxes = [boxes[i] for i, cls in enumerate(classes) if cls == 0]
-                    chair_boxes = [boxes[i] for i, cls in enumerate(classes) if cls == 56]
-
-                    # 人と椅子の重なり（座り判定）をチェック
-                    for p_box in person_boxes:
-                        px1, py1, px2, py2 = p_box
-                        p_center_x = (px1 + px2) / 2
-                        p_lower_y = py2  # 足元・腰付近の座標
-
-                        for c_box in chair_boxes:
-                            cx1, cy1, cx2, cy2 = c_box
-                            # 椅子のボックス範囲内に、人の中心Ｘと下半身付近が収まっているか
-                            if cx1 <= p_center_x <= cx2 and cy1 <= p_lower_y <= cy2 + 30:
-                                is_sitting = True
-                                break
-                        if is_sitting:
+            # 3. 顔で見つからない場合、服装（Re-ID）で判定
+            if detected_user_name == "Guest" and state.last_scanned_qr not in ("None", "Invalid QR"):
+                last_app = state.last_member_appearance
+                if last_app["upper_color"] is not None:
+                    for box in person_boxes:
+                        u_col, _, _ = extract_appearance_features(frame, box)
+                        if u_col is not None and np.linalg.norm(last_app["upper_color"] - u_col) < 50.0:
+                            detected_user_name = state.last_scanned_qr.split(" (")[0]
                             break
 
-            # 4. 会員が検知されており、かつ「椅子に座っている」と判定されたときだけタイマー開始
+            # 座り判定（人の下半身と椅子/ベンチの重なり）
+            is_sitting = any(is_person_sitting(p, seat_boxes) for p in person_boxes)
+            active_machine_key = "bench_press"  # デフォルトのマシン
+
+            # デバッグ表示：人=緑、椅子/ベンチ=オレンジ
+            for b in person_boxes:
+                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 255, 0), 2)
+            for b in seat_boxes:
+                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 165, 255), 2)
+            cv2.putText(frame, f"persons={len(person_boxes)} seats={len(seat_boxes)}", (20, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            # 5. 会員が検知されており、かつ「椅子に座っている」と判定されたときだけタイマー開始
             if detected_user_name != "Guest" and is_sitting:
                 state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
                 cv2.putText(frame, f"Sitting & Using: {detected_user_name}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
