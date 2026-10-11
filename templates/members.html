@@ -80,6 +80,7 @@
             display: flex;
             gap: 12px;
             justify-content: center;
+            flex-wrap: wrap;
         }
         .nav-btn {
             background: rgba(236, 238, 242, 0.3);
@@ -114,6 +115,19 @@
         }
         .nav-btn:hover::after {
             background-color: var(--accent-lime);
+        }
+
+        /* 🆕 ログアウトボタン用の特別スタイル */
+        .nav-btn-logout {
+            border-color: rgba(255, 42, 95, 0.4);
+            color: var(--danger-color);
+        }
+        .nav-btn-logout:hover {
+            background: rgba(255, 42, 95, 0.1);
+            border-color: var(--danger-color);
+        }
+        .nav-btn-logout:hover::after {
+            background-color: var(--danger-color);
         }
 
         /* 共通パネル・テーブル */
@@ -271,6 +285,8 @@
         <nav class="nav-container">
             <a href="/" class="nav-btn">&larr; LIVE MONITOR</a>
             <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+            <!-- 🆕 追加したログアウトボタン -->
+            <a href="/admin/logout" class="nav-btn nav-btn-logout">LOGOUT</a>
         </nav>
     </header>
 
