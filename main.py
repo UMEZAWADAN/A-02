@@ -12,6 +12,8 @@ import smtplib
 import sqlite3
 import threading
 import time
+import traceback
+import unicodedata
 import uuid
 from datetime import datetime
 from queue import Queue
@@ -57,7 +59,13 @@ SEAT_CLASSES = [56]           # COCO: 56=chair（普通の椅子のみ。ベン�
 ROOM_MODEL_PATH = "yolo11n.pt"  # 椅子の検出が不安定なら "yolo11s.pt" や "yolo11m.pt" に変更（精度↑・速度↓）
 SEAT_RELEASE_GRACE = 5.0      # 座っていない状態がこの秒数続いたら、利用終了（マシンを空きに戻す）
 ROOM_CONF = 0.20              # ルームモードの検出しきい値（低めにして椅子の取りこぼしを減らす）
-SIT_OVERLAP_RATIO = 0.25      # 人の下半身ボックスが座面ボックスと重なっている割合の下限
+SIT_OVERLAP_RATIO = 0.35      # 人の下半身ボックスが椅子ボックスと重なっている割合の下限（画面の overlap= を見て調整）
+SIT_CONFIRM_SECONDS = 2.0     # 「座っている」がこの秒数続いて初めてタイマー開始（椅子にかすっただけを除外）
+SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れなら、座り続けているとみなす
+POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
+KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
+SIT_THIGH_DROP_RATIO = 0.6    # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
+STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
 # 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
 active_mode = "entrance"
@@ -241,7 +249,7 @@ class SystemStateManager:
             conn.close()
             self.push_update()
 
-    def update_machine_occupancy(self, active_machine_key, user_name, current_time):
+    def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None):
         with self._lock:
             for m_key in self.machine_states.keys():
                 if m_key == active_machine_key and user_name != "Guest":
@@ -249,8 +257,8 @@ class SystemStateManager:
                     m_state["last_seen"] = current_time
                     if m_state["user"] != user_name:
                         m_state["user"] = user_name
-                        m_state["start_time"] = current_time
-                        m_state["duration"] = 0.0
+                        m_state["start_time"] = started_at if started_at is not None else current_time
+                        m_state["duration"] = current_time - m_state["start_time"]
                     else:
                         if m_state["start_time"] is not None:
                             m_state["duration"] = current_time - m_state["start_time"]
@@ -363,18 +371,75 @@ def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
         return False, f"顔の類似度が不足（最大{best_sim:.2f} ≤ しきい値{FACE_MATCH_THRESHOLD}）"
     return True, ""
 
-def is_person_sitting(p_box, seat_boxes):
-    """人の下半身（ボックスの下半分）が椅子/ベンチのボックスと十分重なっていれば「座っている」とみなす"""
+def sit_overlap_ratio(p_box, seat_boxes):
+    """人の下半身（ボックスの下半分）が椅子ボックスと重なっている割合の最大値（0〜1）"""
     px1, py1, px2, py2 = p_box
     mid_y = py1 + (py2 - py1) * 0.5
     lower_area = max(1.0, (px2 - px1) * (py2 - mid_y))
+    best = 0.0
     for sx1, sy1, sx2, sy2 in seat_boxes:
         ix1, iy1 = max(px1, sx1), max(mid_y, sy1)
         ix2, iy2 = min(px2, sx2), min(py2, sy2)
         inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-        if inter / lower_area >= SIT_OVERLAP_RATIO:
-            return True
-    return False
+        best = max(best, inter / lower_area)
+    return best
+
+class SitConfirmer:
+    """座っている状態が SIT_CONFIRM_SECONDS 続いたら確定する（かすっただけ・一瞬の誤検知を除外）"""
+    def __init__(self):
+        self.since = None
+        self.last_seen = 0.0
+
+    def update(self, sitting_now, now):
+        """戻り値: (確定したか, 座り始めの時刻)"""
+        if not sitting_now:
+            return False, self.since
+        if self.since is None or (now - self.last_seen) > SIT_BREAK_TOLERANCE:
+            self.since = now
+        self.last_seen = now
+        return (now - self.since) >= SIT_CONFIRM_SECONDS, self.since
+
+def _visible_mean(kxy, kconf, idxs):
+    """骨格の点のうち、見えているものの平均座標。ひとつも見えなければ None"""
+    pts = [kxy[i] for i in idxs if kconf[i] >= KP_CONF and (kxy[i][0] > 0 or kxy[i][1] > 0)]
+    if not pts:
+        return None
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+def _hip_on_seat(hip, seat):
+    """腰が椅子ボックスの内側（上端にわずかな余裕）にあるか"""
+    sx1, sy1, sx2, sy2 = seat
+    top = sy1 - 0.05 * (sy2 - sy1)
+    return sx1 <= hip[0] <= sx2 and top <= hip[1] <= sy2
+
+def evaluate_sitting(box, kxy, kconf, seat_boxes):
+    """座っているか判定。 (座っているか, 重なり割合, 判定根拠) を返す
+    骨格(COCO): 5,6=肩 / 11,12=腰 / 13,14=膝
+    """
+    overlap = sit_overlap_ratio(box, seat_boxes) if seat_boxes else 0.0
+    if overlap < SIT_OVERLAP_RATIO:
+        return False, overlap, "overlap"
+
+    hip = _visible_mean(kxy, kconf, (11, 12))
+    if hip is not None:
+        # 腰が椅子の位置になければ、前に立っているだけ・かすっただけ
+        if not any(_hip_on_seat(hip, s) for s in seat_boxes):
+            return False, overlap, "hip-outside"
+        knee = _visible_mean(kxy, kconf, (13, 14))
+        if knee is not None:
+            shoulder = _visible_mean(kxy, kconf, (5, 6))
+            torso = (hip[1] - shoulder[1]) if shoulder is not None else (box[3] - box[1]) * 0.3
+            torso = max(torso, 1.0)
+            # 立っていると膝は腰のかなり下、座ると腰と同じくらいの高さ
+            if (knee[1] - hip[1]) / torso >= SIT_THIGH_DROP_RATIO:
+                return False, overlap, "standing-legs"
+        return True, overlap, "pose"
+
+    # 骨格が取れないときの予備：縦長すぎる人ボックスは立っているとみなす
+    h, w = box[3] - box[1], max(box[2] - box[0], 1.0)
+    if h / w >= STANDING_ASPECT_RATIO:
+        return False, overlap, "standing-aspect"
+    return True, overlap, "box"
 
 # =========================================================================
 # 🎥 カメラ処理ループ
@@ -387,6 +452,7 @@ def camera_processing_loop():
     yolo_model = YOLO("yolo11n.pt")
     # ルームモード専用（.track() を一度も呼ばない＝トラッカーが付かないモデル）
     room_model = YOLO(ROOM_MODEL_PATH)
+    pose_model = YOLO(POSE_MODEL_PATH)   # 人の骨格（腰・膝の位置）用。トラッカーなし
     
     print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
@@ -399,6 +465,7 @@ def camera_processing_loop():
 
     track_history = {}
     face_sim_history = {}  # track_id -> {best, time, member_id}
+    sit_confirmer = SitConfirmer()
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
@@ -527,16 +594,21 @@ def camera_processing_loop():
                     detected_user_name = best_match_name
                     break
 
-            # 2. 人・椅子を検出（ルーム専用モデルで、1フレーム1回だけ推論）
-            person_boxes = []
+            # 2. 椅子と人（骨格つき）を検出。どちらもトラッカーなしのルーム専用モデルで、1フレーム1回
             seat_boxes = []
-            det = room_model(frame, classes=[0] + SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
-            if det.boxes is not None and len(det.boxes) > 0:
-                for b, c in zip(det.boxes.xyxy.cpu().numpy(), det.boxes.cls.cpu().numpy().astype(int)):
-                    if c == 0:
-                        person_boxes.append(b)
-                    else:
-                        seat_boxes.append(b)
+            seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
+            if seat_det.boxes is not None and len(seat_det.boxes) > 0:
+                seat_boxes = list(seat_det.boxes.xyxy.cpu().numpy())
+
+            persons = []   # (人ボックス, 骨格の座標, 骨格の信頼度)
+            pose_det = pose_model(frame, conf=0.3, verbose=False)[0]
+            if pose_det.boxes is not None and len(pose_det.boxes) > 0 and pose_det.keypoints is not None:
+                p_boxes = pose_det.boxes.xyxy.cpu().numpy()
+                kxy_all = pose_det.keypoints.xy.cpu().numpy()
+                kcf_all = (pose_det.keypoints.conf.cpu().numpy() if pose_det.keypoints.conf is not None
+                           else np.ones(kxy_all.shape[:2]))
+                persons = [(p_boxes[i], kxy_all[i], kcf_all[i]) for i in range(len(p_boxes))]
+            person_boxes = [p[0] for p in persons]
 
             # 3. 顔で見つからない場合、服装（Re-ID）で判定
             if detected_user_name == "Guest" and state.last_scanned_qr not in ("None", "Invalid QR"):
@@ -548,22 +620,35 @@ def camera_processing_loop():
                             detected_user_name = state.last_scanned_qr.split(" (")[0]
                             break
 
-            # 座り判定（人の下半身と椅子/ベンチの重なり）
-            is_sitting = any(is_person_sitting(p, seat_boxes) for p in person_boxes)
+            # 座り判定（椅子との重なり＋腰の位置＋脚の曲がり）
+            best = (False, -1.0, "no-person")
+            for box, kxy_i, kcf_i in persons:
+                res = evaluate_sitting(box, kxy_i, kcf_i, seat_boxes)
+                if (res[0], res[1]) > (best[0], best[1]):
+                    best = res
+            is_sitting, overlap, why = best
             active_machine_key = "bench_press"  # デフォルトのマシン
 
-            # デバッグ表示：人=緑、椅子/ベンチ=オレンジ
-            for b in person_boxes:
-                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 255, 0), 2)
+            # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
+            for box, kxy_i, kcf_i in persons:
+                cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                for idx in (11, 12, 13, 14):
+                    if kcf_i[idx] >= KP_CONF:
+                        cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), 4, (0, 0, 255), -1)
             for b in seat_boxes:
                 cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 165, 255), 2)
-            cv2.putText(frame, f"persons={len(person_boxes)} seats={len(seat_boxes)}", (20, 100),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(frame, f"persons={len(persons)} seats={len(seat_boxes)} overlap={max(overlap, 0.0):.2f} why={why}",
+                        (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-            # 5. 会員が検知されており、かつ「椅子に座っている」と判定されたときだけタイマー開始
-            if detected_user_name != "Guest" and is_sitting:
-                state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
+            # 5. 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
+            sitting_now = detected_user_name != "Guest" and is_sitting
+            confirmed, sit_since = sit_confirmer.update(sitting_now, current_time)
+            if confirmed:
+                state.update_machine_occupancy(active_machine_key, detected_user_name, current_time, started_at=sit_since)
                 cv2.putText(frame, f"Sitting & Using: {detected_user_name}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            elif sitting_now:
+                cv2.putText(frame, f"Sitting? confirming {current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
+                            (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             else:
                 status_text = f"User: {detected_user_name} | Sitting: {is_sitting}"
                 cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
@@ -607,6 +692,11 @@ def get_register_page(request: Request):
 @app.post("/api/register")
 def api_register(data: RegisterRequest):
     try:
+        # メールアドレスを正規化（全角→半角、前後の空白除去）。SMTPは半角ASCIIしか扱えない
+        email = unicodedata.normalize("NFKC", data.email).strip()
+        if not email.isascii() or "@" not in email:
+            return {"status": "error", "message": "メールアドレスは半角英数字で入力してください。"}
+
         header, encoded = data.image.split(",", 1)
         image_bytes = base64.b64decode(encoded)
         np_arr = np.frombuffer(image_bytes, np.uint8)
@@ -629,7 +719,7 @@ def api_register(data: RegisterRequest):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (?, ?, ?, ?, ?)",
-            (member_id, data.name, data.email, qr_token, sqlite3.Binary(face_embedding))
+            (member_id, data.name, email, qr_token, sqlite3.Binary(face_embedding))
         )
         conn.commit()
         conn.close()
@@ -647,7 +737,7 @@ def api_register(data: RegisterRequest):
         msg = MIMEMultipart()
         msg['Subject'] = '【ジムセキュリティ】会員登録完了と専用QRコードのお知らせ'
         msg['From'] = SENDER_EMAIL
-        msg['To'] = data.email
+        msg['To'] = email
 
         body = MIMEText(f"{data.name} 様\n\nジムの新規ご登録ありがとうございます。\nあなた専用の入館用QRコードを発行いたしました。")
         msg.attach(body)
@@ -658,12 +748,13 @@ def api_register(data: RegisterRequest):
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, data.email, msg.as_string())
+            server.sendmail(SENDER_EMAIL, email, msg.as_string())
 
         return {"status": "success", "member_id": member_id}
 
     except Exception as e:
         print(f"登録エラー: {e}")
+        traceback.print_exc()  # どの行で失敗したかをターミナルに出す
         return {"status": "error", "message": str(e)}
 
 @app.get("/video")
