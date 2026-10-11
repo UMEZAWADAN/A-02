@@ -40,7 +40,8 @@ DB_PATH = "gym_security.db"
 DUPLICATE_QR_WINDOW = 5.0
 CO_TRAILING_WINDOW = 5.0
 LIMIT_SECONDS = 10.0
-FACE_TIMEOUT = 5.0
+FACE_TIMEOUT = 5.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
+FACE_MATCH_THRESHOLD = 0.55   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
 
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
@@ -127,6 +128,7 @@ def init_database():
     conn.close()
 
 init_database()
+print(f">> 使用DB: {os.path.abspath(DB_PATH)}")
 
 print(">> [1/3] YOLO（人・椅子検出）モデルを読み込み中...")
 yolo_model = None
@@ -142,6 +144,9 @@ class SystemStateManager:
         self.out_count = 0
         self.last_scanned_qr = "None"
         self.last_qr_time = 0.0
+        self.accepted_token = None   # 直近に認証成功したQRトークン
+        self.rejected_token = None   # 直近に拒否した（未登録/読み取り崩れ）QRの文字列
+        self.rejected_time = 0.0
         self.co_trailing_alert = False
         
         # 入口の1:1照合用に直近の会員情報と顔特徴量を保持
@@ -164,6 +169,16 @@ class SystemStateManager:
         
         self.update_queue = Queue()
 
+    def should_process_qr(self, qr_data: str, now: float) -> bool:
+        """同じQRが映り続けている間は再認証しない。有効QRなら有効時間(last_qr_time)だけ延長する"""
+        with self._lock:
+            if qr_data == self.accepted_token and (now - self.last_qr_time) <= DUPLICATE_QR_WINDOW:
+                self.last_qr_time = now
+                return False
+            if qr_data == self.rejected_token and (now - self.rejected_time) <= DUPLICATE_QR_WINDOW:
+                return False
+            return True
+
     def process_qr(self, qr_data: str, current_time: float):
         with self._lock:
             conn = sqlite3.connect(DB_PATH)
@@ -174,6 +189,8 @@ class SystemStateManager:
             conn.close()
 
             if member:
+                self.accepted_token = qr_data
+                self.rejected_token = None
                 self.last_scanned_qr = f"{member['name']} ({member['member_id']})"
                 self.last_member_id = member['member_id']
                 if member['face_embedding']:
@@ -182,10 +199,21 @@ class SystemStateManager:
                     self.last_member_embedding = None
                 print(f"🔓 【QR認証成功】 歓迎: {member['name']} (ID: {member['member_id']})")
             else:
+                self.rejected_token = qr_data
+                self.rejected_time = current_time
+                auth_still_valid = (
+                    self.last_member_id is not None
+                    and (current_time - self.last_qr_time) <= CO_TRAILING_WINDOW
+                )
+                if auth_still_valid:
+                    # 有効な認証の直後に読み取りが崩れた/未登録QRが映っただけなら、認証状態を上書きしない
+                    print(f"⚠️ 【QR読み取り無視】 有効な認証の直後に未登録の文字列を検出（認証は維持）: {qr_data!r}")
+                    return
+                self.accepted_token = None
                 self.last_scanned_qr = "Invalid QR"
                 self.last_member_id = None
                 self.last_member_embedding = None
-                print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data}")
+                print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data!r} (長さ {len(qr_data)})")
 
             self.last_qr_time = current_time
             self.co_trailing_alert = False
@@ -301,6 +329,28 @@ def extract_appearance_features(frame, box):
     except Exception:
         return None, None, 1.0
 
+def cosine_sim(a, b):
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.dot(a, b) / (na * nb))
+
+def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
+    """入場判定。 (OKかどうか, NGの理由) を返す"""
+    if last_scanned_qr == "None":
+        return False, "QRが読み取られていません"
+    if last_scanned_qr == "Invalid QR":
+        return False, "QRが無効（未登録のトークン）"
+    if time_since_qr > CO_TRAILING_WINDOW:
+        return False, f"QR認証から{time_since_qr:.1f}秒経過（上限{CO_TRAILING_WINDOW}秒）"
+    if not has_embedding:
+        return False, "この会員は顔データが未登録"
+    if best_sim is None:
+        return False, "ゲート通過前に顔を検出・照合できなかった"
+    if best_sim <= FACE_MATCH_THRESHOLD:
+        return False, f"顔の類似度が不足（最大{best_sim:.2f} ≤ しきい値{FACE_MATCH_THRESHOLD}）"
+    return True, ""
+
 def is_person_sitting(p_box, seat_boxes):
     """人の下半身（ボックスの下半分）が椅子/ベンチのボックスと十分重なっていれば「座っている」とみなす"""
     px1, py1, px2, py2 = p_box
@@ -336,6 +386,7 @@ def camera_processing_loop():
         return
 
     track_history = {}
+    face_sim_history = {}  # track_id -> {best, time, member_id}
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
@@ -358,7 +409,7 @@ def camera_processing_loop():
                 for i in range(4):
                     cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), 2)
                 if qr_data:
-                    if qr_data != state.last_scanned_qr or (current_time - state.last_qr_time) > DUPLICATE_QR_WINDOW:
+                    if state.should_process_qr(qr_data, current_time):
                         state.process_qr(qr_data, current_time)
 
             faces = face_app.get(frame)
@@ -366,6 +417,10 @@ def camera_processing_loop():
             yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
             cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
             cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+            # 古い顔類似度の記録を掃除
+            for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
+                del face_sim_history[tid]
 
             if yolo_results[0].boxes.id is not None:
                 boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
@@ -375,24 +430,42 @@ def camera_processing_loop():
                     x_center = int((box[0] + box[2]) / 2)
                     cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
 
+                    # QR認証済み会員の顔との類似度を毎フレーム計算し、直近(FACE_TIMEOUT秒)の最大値を保持
+                    if state.last_member_embedding is not None:
+                        for face in faces:
+                            fcx = (face.bbox[0] + face.bbox[2]) / 2
+                            fcy = (face.bbox[1] + face.bbox[3]) / 2
+                            if box[0] <= fcx <= box[2] and box[1] <= fcy <= box[3]:
+                                sim = cosine_sim(state.last_member_embedding, face.embedding)
+                                rec = face_sim_history.get(track_id)
+                                if (rec is None or rec["member_id"] != state.last_member_id
+                                        or current_time - rec["time"] > FACE_TIMEOUT):
+                                    face_sim_history[track_id] = {"best": sim, "time": current_time, "member_id": state.last_member_id}
+                                elif sim > rec["best"]:
+                                    rec["best"] = sim
+                                    rec["time"] = current_time
+
+                    rec = face_sim_history.get(track_id)
+                    if rec is not None and current_time - rec["time"] <= FACE_TIMEOUT:
+                        cv2.putText(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(15, int(box[1]) - 8)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
                     if track_id in track_history:
                         prev_x = track_history[track_id]
                         if prev_x < LINE_X and x_center >= LINE_X:
                             time_since_qr = current_time - state.last_qr_time
-                            
-                            face_matched = False
-                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_member_embedding is not None:
-                                for face in faces:
-                                    fx1, fy1, fx2, fy2 = face.bbox.astype(int)
-                                    if box[0] <= fx1 and fx2 <= box[2]:
-                                        sim = np.dot(state.last_member_embedding, face.embedding) / (
-                                            np.linalg.norm(state.last_member_embedding) * np.linalg.norm(face.embedding)
-                                        )
-                                        if sim > 0.55:
-                                            face_matched = True
-                                            break
+                            rec = face_sim_history.get(track_id)
+                            best_sim = None
+                            if (rec is not None and rec["member_id"] == state.last_member_id
+                                    and current_time - rec["time"] <= FACE_TIMEOUT):
+                                best_sim = rec["best"]
 
-                            if time_since_qr <= CO_TRAILING_WINDOW and state.last_scanned_qr != "None" and state.last_scanned_qr != "Invalid QR" and face_matched:
+                            ok, reason = judge_entry(
+                                time_since_qr, state.last_scanned_qr,
+                                state.last_member_embedding is not None, best_sim
+                            )
+                            if ok:
+                                print(f"✅ 【入場OK】 {state.last_scanned_qr} / 顔の類似度 {best_sim:.2f}")
                                 state.register_pass("IN", state.last_scanned_qr, 0)
 
                                 upper_c, lower_c, aspect = extract_appearance_features(frame, box)
@@ -401,8 +474,8 @@ def camera_processing_loop():
                                     "lower_color": lower_c,
                                     "aspect_ratio": aspect
                                 }
-
                             else:
+                                print(f"🚨 【入場警告】 {reason}")
                                 state.set_alert(True)
                                 state.register_pass("IN", "Unknown / Face Mismatch", 1)
                         elif prev_x > LINE_X and x_center <= LINE_X:
@@ -438,7 +511,7 @@ def camera_processing_loop():
                         highest_sim = sim
                         best_match_name = member['name']
 
-                if highest_sim > 0.55:
+                if highest_sim > FACE_MATCH_THRESHOLD:
                     detected_user_name = best_match_name
                     break
 
