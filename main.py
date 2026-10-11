@@ -540,7 +540,6 @@ def camera_processing_loop():
             cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
             cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
-            # 古い顔類似度の記録を掃除
             for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                 del face_sim_history[tid]
 
