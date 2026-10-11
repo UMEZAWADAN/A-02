@@ -65,6 +65,7 @@ SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れな
 POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
 KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
 SIT_THIGH_DROP_RATIO = 0.75   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
+IDENTITY_HOLD_SECONDS = 15.0  # 顔認識が外れても、直前に特定した会員をこの秒数は保持（座っている間は保持し続ける）
 SEAT_MEMORY_SECONDS = 10.0    # 椅子が検出できなくなっても、この秒数は直前の位置を覚えておく（座った人に隠れる対策）
 SEAT_OCCLUDED_RATIO = 0.15    # 人が椅子ボックスの面積のこれ以上に重なっていたら「隠れている」とみなし、椅子の記憶を保持
 HIP_SEAT_MARGIN = 0.10        # 腰が椅子ボックスの上端よりこの割合だけ上でも許容
@@ -402,6 +403,24 @@ class SitConfirmer:
         self.last_seen = now
         return (now - self.since) >= SIT_CONFIRM_SECONDS, self.since
 
+class IdentityHolder:
+    """顔認識が一瞬外れても、直前に特定した会員を保持する。座っている間は保持し続け、離れて一定時間でリセット"""
+    def __init__(self):
+        self.name = None
+        self.time = 0.0
+
+    def update(self, recognized_name, is_sitting, now):
+        """recognized_name: 今フレームで特定できた会員名（できなければ "Guest"）。戻り値: (使う名前, 保持中か)"""
+        if recognized_name != "Guest":
+            self.name, self.time = recognized_name, now
+            return recognized_name, False
+        if self.name is not None and (now - self.time) <= IDENTITY_HOLD_SECONDS:
+            if is_sitting:
+                self.time = now
+            return self.name, True
+        self.name = None
+        return "Guest", False
+
 def _box_inter(a, b):
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
 
@@ -508,6 +527,7 @@ def camera_processing_loop():
     face_sim_history = {}  # track_id -> {best, time, member_id}
     sit_confirmer = SitConfirmer()
     seat_memory = []
+    identity_holder = IdentityHolder()
     sit_log = {"key": None, "time": 0.0}
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
@@ -540,6 +560,7 @@ def camera_processing_loop():
             cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
             cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
+            # 古い顔類似度の記録を掃除
             for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                 del face_sim_history[tid]
 
@@ -696,17 +717,21 @@ def camera_processing_loop():
                       f"persons={len(persons)}, seats={n_live}+{len(seat_memory) - n_live}記憶)")
                 sit_log["key"], sit_log["time"] = log_key, current_time
 
+            # 顔認識が外れても、直前に特定した会員を保持（座っている間は保持し続ける）
+            detected_user_name, identity_held = identity_holder.update(detected_user_name, is_sitting, current_time)
+            held_mark = " (face lost)" if identity_held else ""
+
             # 5. 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
             sitting_now = detected_user_name != "Guest" and is_sitting
             confirmed, sit_since = sit_confirmer.update(sitting_now, current_time)
             if confirmed:
                 state.update_machine_occupancy(active_machine_key, detected_user_name, current_time, started_at=sit_since)
-                cv2.putText(frame, f"Sitting & Using: {detected_user_name}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             elif sitting_now:
                 cv2.putText(frame, f"Sitting? confirming {current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
                             (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
             else:
-                status_text = f"User: {detected_user_name} | Sitting: {is_sitting}"
+                status_text = f"User: {detected_user_name}{held_mark} | Sitting: {is_sitting}"
                 cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
             state.release_idle_machines(current_time)
