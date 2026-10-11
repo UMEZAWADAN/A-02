@@ -64,7 +64,10 @@ SIT_CONFIRM_SECONDS = 2.0     # 「座っている」がこの秒数続いて初
 SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れなら、座り続けているとみなす
 POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
 KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
-SIT_THIGH_DROP_RATIO = 0.6    # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
+SIT_THIGH_DROP_RATIO = 0.75   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
+SEAT_MEMORY_SECONDS = 10.0    # 椅子が検出できなくなっても、この秒数は直前の位置を覚えておく（座った人に隠れる対策）
+SEAT_OCCLUDED_RATIO = 0.15    # 人が椅子ボックスの面積のこれ以上に重なっていたら「隠れている」とみなし、椅子の記憶を保持
+HIP_SEAT_MARGIN = 0.10        # 腰が椅子ボックスの上端よりこの割合だけ上でも許容
 STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
 # 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
@@ -399,6 +402,44 @@ class SitConfirmer:
         self.last_seen = now
         return (now - self.since) >= SIT_CONFIRM_SECONDS, self.since
 
+def _box_inter(a, b):
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+def _box_area(a):
+    return max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+
+def update_seat_memory(memory, detected, person_boxes, now):
+    """椅子の位置を覚えておく。座った人に隠れて検出できなくなっても、直前の位置を使い続ける。
+    memory: [{"box", "last_seen", "live"}] を更新し、使う椅子ボックスのリストを返す"""
+    for m in memory:
+        m["live"] = False
+    used = set()
+    for m in memory:
+        occluded = any(_box_inter(p, m["box"]) / _box_area(m["box"]) >= SEAT_OCCLUDED_RATIO for p in person_boxes)
+        best_j, best_score = None, 0.0
+        for j, d in enumerate(detected):
+            if j in used:
+                continue
+            inter = _box_inter(m["box"], d)
+            iou = inter / (_box_area(m["box"]) + _box_area(d) - inter)
+            contained = inter / _box_area(d)        # 検出が(隠れて)小さくなっても、記憶の枠内なら同じ椅子とみなす
+            score = max(iou, contained if contained >= 0.7 else 0.0)
+            if score >= 0.3 and score > best_score:
+                best_j, best_score = j, score
+        if best_j is not None:
+            used.add(best_j)
+            m["live"] = True
+            m["last_seen"] = now
+            if not occluded:                         # 人に隠れていない時だけ位置を更新（一部だけ映った枠で縮まないように）
+                m["box"] = detected[best_j]
+        elif occluded:
+            m["last_seen"] = now
+    for j, d in enumerate(detected):
+        if j not in used:
+            memory.append({"box": d, "last_seen": now, "live": True})
+    memory[:] = [m for m in memory if now - m["last_seen"] <= SEAT_MEMORY_SECONDS]
+    return [m["box"] for m in memory]
+
 def _visible_mean(kxy, kconf, idxs):
     """骨格の点のうち、見えているものの平均座標。ひとつも見えなければ None"""
     pts = [kxy[i] for i in idxs if kconf[i] >= KP_CONF and (kxy[i][0] > 0 or kxy[i][1] > 0)]
@@ -409,7 +450,7 @@ def _visible_mean(kxy, kconf, idxs):
 def _hip_on_seat(hip, seat):
     """腰が椅子ボックスの内側（上端にわずかな余裕）にあるか"""
     sx1, sy1, sx2, sy2 = seat
-    top = sy1 - 0.05 * (sy2 - sy1)
+    top = sy1 - HIP_SEAT_MARGIN * (sy2 - sy1)
     return sx1 <= hip[0] <= sx2 and top <= hip[1] <= sy2
 
 def evaluate_sitting(box, kxy, kconf, seat_boxes):
@@ -466,6 +507,8 @@ def camera_processing_loop():
     track_history = {}
     face_sim_history = {}  # track_id -> {best, time, member_id}
     sit_confirmer = SitConfirmer()
+    seat_memory = []
+    sit_log = {"key": None, "time": 0.0}
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
@@ -595,10 +638,10 @@ def camera_processing_loop():
                     break
 
             # 2. 椅子と人（骨格つき）を検出。どちらもトラッカーなしのルーム専用モデルで、1フレーム1回
-            seat_boxes = []
+            detected_seats = []
             seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
             if seat_det.boxes is not None and len(seat_det.boxes) > 0:
-                seat_boxes = list(seat_det.boxes.xyxy.cpu().numpy())
+                detected_seats = list(seat_det.boxes.xyxy.cpu().numpy())
 
             persons = []   # (人ボックス, 骨格の座標, 骨格の信頼度)
             pose_det = pose_model(frame, conf=0.3, verbose=False)[0]
@@ -609,6 +652,9 @@ def camera_processing_loop():
                            else np.ones(kxy_all.shape[:2]))
                 persons = [(p_boxes[i], kxy_all[i], kcf_all[i]) for i in range(len(p_boxes))]
             person_boxes = [p[0] for p in persons]
+
+            # 椅子は、座った人に隠れて検出が途切れても、直前の位置を覚えて使う
+            seat_boxes = update_seat_memory(seat_memory, detected_seats, person_boxes, current_time)
 
             # 3. 顔で見つからない場合、服装（Re-ID）で判定
             if detected_user_name == "Guest" and state.last_scanned_qr not in ("None", "Invalid QR"):
@@ -635,10 +681,21 @@ def camera_processing_loop():
                 for idx in (11, 12, 13, 14):
                     if kcf_i[idx] >= KP_CONF:
                         cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), 4, (0, 0, 255), -1)
-            for b in seat_boxes:
-                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 165, 255), 2)
-            cv2.putText(frame, f"persons={len(persons)} seats={len(seat_boxes)} overlap={max(overlap, 0.0):.2f} why={why}",
+            for m in seat_memory:
+                b = m["box"]
+                color = (0, 165, 255) if m["live"] else (0, 255, 255)   # 検出中=オレンジ / 記憶のみ=黄
+                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, 2)
+            n_live = sum(1 for m in seat_memory if m["live"])
+            cv2.putText(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
+                               f"overlap={max(overlap, 0.0):.2f} why={why}",
                         (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+            # 判定が変わったらターミナルにも出す（1秒に1回まで）
+            log_key = (is_sitting, why)
+            if log_key != sit_log["key"] and current_time - sit_log["time"] >= 1.0:
+                print(f"🪑 座り判定: {is_sitting} (why={why}, overlap={max(overlap, 0.0):.2f}, "
+                      f"persons={len(persons)}, seats={n_live}+{len(seat_memory) - n_live}記憶)")
+                sit_log["key"], sit_log["time"] = log_key, current_time
 
             # 5. 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
             sitting_now = detected_user_name != "Guest" and is_sitting
