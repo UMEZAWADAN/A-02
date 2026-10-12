@@ -66,13 +66,6 @@ SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れな
 POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
 KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
 SIT_THIGH_DROP_RATIO = 0.75   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
-REID_THRESHOLD = 0.70         # 服の色の類似度(0〜1)がこれ以上で「同じ人」とみなす（画面の color= を見て調整）
-REID_MARGIN = 0.10            # 2番目に似ている会員との差がこれ以上あるときだけ採用
-REID_INTERVAL = 1.0           # 顔で特定できないとき、服の色で推定する間隔（秒）
-REID_ADD_INTERVAL = 5.0       # 顔で特定できている間、座った姿の特徴量を追加する間隔（秒）
-REID_MAX_FEATS = 10           # 会員1人あたりに保持する特徴量の数
-REID_TTL_SECONDS = 3 * 3600   # 特徴量を使える期間（服装は日が変わると変わる）
-REID_MIN_W, REID_MIN_H = 40, 80   # これより小さい人からは特徴量を取らない
 IDENTITY_HOLD_SECONDS = 15.0  # 顔認識が外れても、直前に特定した会員をこの秒数は保持（座っている間は保持し続ける）
 SEAT_MEMORY_SECONDS = 10.0    # 椅子が検出できなくなっても、この秒数は直前の位置を覚えておく（座った人に隠れる対策）
 SEAT_OCCLUDED_RATIO = 0.15    # 人が椅子ボックスの面積のこれ以上に重なっていたら「隠れている」とみなし、椅子の記憶を保持
@@ -181,7 +174,6 @@ class SystemStateManager:
         self.last_member_id = None
         self.last_member_embedding = None
 
-        
         # ルーム監視用の状態管理
         self.active_users = {} 
         
@@ -426,132 +418,6 @@ class IdentityHolder:
         self.name, self.member_id = None, None
         return "Guest", None, False
 
-def _color_hist(region):
-    """領域の色の分布。照明が変わっても崩れにくいよう、「色み(r,g比)」と「明るさ」を分けて数える。
-    割合にしてから平方根を取る → 内積が類似度(0〜1)になる（長さ1）"""
-    px = region.reshape(-1, 3).astype(np.float32)       # B, G, R
-    total_rgb = px.sum(axis=1)
-    bright = px.max(axis=1)
-    bright_hist = np.histogram(bright, bins=4, range=(0, 256))[0].astype(np.float32)
-
-    dark = total_rgb < 120                               # 暗すぎる画素は色みが不安定なので別枠
-    chroma = np.zeros(5 * 5 + 1, np.float32)
-    chroma[-1] = dark.sum()
-    ok = ~dark
-    if ok.any():
-        r = px[ok, 2] / total_rgb[ok]
-        g = px[ok, 1] / total_rgb[ok]
-        ir = np.minimum((r * 5).astype(int), 4)
-        ig = np.minimum((g * 5).astype(int), 4)
-        chroma[:25] = np.bincount(ir * 5 + ig, minlength=25)
-    if chroma.sum() <= 0:
-        return None
-    chroma /= chroma.sum()
-    bright_hist /= max(bright_hist.sum(), 1.0)
-    return np.concatenate([np.sqrt(0.75) * np.sqrt(chroma), np.sqrt(0.25) * np.sqrt(bright_hist)]).astype(np.float32)
-
-def extract_body_feature(frame, box):
-    """人の枠から、上半身(胴)と下半身の服の色の分布を特徴量にする。OpenCVだけで動き、モデルのファイルは不要
-    背景が入りにくいよう、枠の左右の端は使わない。上半身60%・下半身40%の重みで、長さ1に正規化"""
-    H, W = frame.shape[:2]
-    x1, y1, x2, y2 = [int(v) for v in box[:4]]
-    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(W, x2), min(H, y2)
-    w, h = x2 - x1, y2 - y1
-    if w < REID_MIN_W or h < REID_MIN_H:
-        return None
-    cx1, cx2 = x1 + int(w * 0.2), x2 - int(w * 0.2)
-    upper = frame[y1 + int(h * 0.15):y1 + int(h * 0.5), cx1:cx2]
-    lower = frame[y1 + int(h * 0.5):y1 + int(h * 0.9), cx1:cx2]
-    if upper.size == 0 or lower.size == 0:
-        return None
-    hu, hl = _color_hist(upper), _color_hist(lower)
-    if hu is None or hl is None:
-        return None
-    return np.concatenate([np.sqrt(0.6) * hu, np.sqrt(0.4) * hl]).astype(np.float32)
-
-class ReIDGallery:
-    """会員ごとの全身特徴量を保持する（期限切れは使わない）"""
-    def __init__(self):
-        self.items = {}   # member_id -> {"name", "feats", "time"}
-
-    def add(self, member_id, name, feat, now):
-        e = self.items.setdefault(member_id, {"name": name, "feats": [], "time": now})
-        e["name"], e["time"] = name, now
-        e["feats"].append(feat)
-        if len(e["feats"]) > REID_MAX_FEATS:
-            e["feats"].pop(0)
-
-    def identify(self, feat, now):
-        """戻り値: (member_id, 名前, 類似度, 2位との差)。保持している会員がいなければ None"""
-        scores = []
-        for mid, e in self.items.items():
-            if now - e["time"] > REID_TTL_SECONDS:
-                continue
-            scores.append((max(float(np.dot(feat, f)) for f in e["feats"]), mid, e["name"]))
-        if not scores:
-            return None
-        scores.sort(reverse=True)
-        margin = scores[0][0] - scores[1][0] if len(scores) > 1 else 1.0
-        return scores[0][1], scores[0][2], scores[0][0], margin
-
-class BodyReID:
-    """顔で特定できないときに、服の色で「座っている人」が誰かを推定する"""
-    def __init__(self):
-        self.gallery = ReIDGallery()
-        self.last_add = 0.0
-        self.last_try = 0.0
-        self.result = None
-        self.result_time = 0.0
-        self.logged_name = None
-
-    def add_entrance(self, frame, box, member_id, name, now):
-        """入口で、QRと顔が一致した人の服の色を登録"""
-        if member_id is None:
-            return
-        feat = extract_body_feature(frame, box)
-        if feat is not None:
-            self.gallery.add(member_id, name, feat, now)
-
-    def resolve(self, frame, sit_box, is_sitting, face_name, face_id, face_center, now):
-        """戻り値: (使う名前, 会員ID, Re-IDで決めたか, 画面表示用の文字列)"""
-        if not is_sitting or sit_box is None:
-            self.result = None
-            return face_name, face_id, False, ""
-
-        # 顔の持ち主が「座っている人」と別人なら、その顔の名前は使わない
-        if face_name != "Guest":
-            inside = (face_center is not None
-                      and sit_box[0] <= face_center[0] <= sit_box[2]
-                      and sit_box[1] <= face_center[1] <= sit_box[3])
-            if not inside:
-                face_name, face_id = "Guest", None
-
-        if face_name != "Guest":
-            # 顔で特定できている間に、座った姿の服の色を追加（一定間隔）
-            if face_id is not None and now - self.last_add >= REID_ADD_INTERVAL:
-                self.last_add = now
-                feat = extract_body_feature(frame, sit_box)
-                if feat is not None:
-                    self.gallery.add(face_id, face_name, feat, now)
-            return face_name, face_id, False, ""
-
-        # 顔で特定できない：服の色で推定（一定間隔）
-        if now - self.last_try >= REID_INTERVAL:
-            self.last_try = now
-            feat = extract_body_feature(frame, sit_box)
-            self.result = self.gallery.identify(feat, now) if feat is not None else None
-            self.result_time = now
-        if self.result is not None and now - self.result_time <= REID_INTERVAL * 3:
-            mid, name, score, margin = self.result
-            text = f"color={score:.2f}({name}) margin={margin:.2f}"
-            if score >= REID_THRESHOLD and margin >= REID_MARGIN:
-                if self.logged_name != name:
-                    print(f"🧍 服の色で特定: {name} (score={score:.2f}, margin={margin:.2f})")
-                    self.logged_name = name
-                return name, mid, True, text
-            return "Guest", None, False, text
-        return "Guest", None, False, ""
-
 def _box_inter(a, b):
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
 
@@ -659,7 +525,6 @@ def camera_processing_loop():
     sit_confirmer = SitConfirmer()
     seat_memory = []
     identity_holder = IdentityHolder()
-    body_reid = BodyReID()
     sit_log = {"key": None, "time": 0.0}
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
@@ -741,9 +606,6 @@ def camera_processing_loop():
                             if ok:
                                 print(f"✅ 【入場OK】 {state.last_scanned_qr} / 顔の類似度 {best_sim:.2f}")
                                 state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
-
-                                body_reid.add_entrance(frame, box, state.last_member_id,
-                                                       state.last_scanned_qr.split(" (")[0], current_time)
                             else:
                                 print(f"🚨 【入場警告】 {reason}")
                                 state.set_alert(True)
@@ -787,17 +649,17 @@ def camera_processing_loop():
 
                 if highest_sim > FACE_MATCH_THRESHOLD:
                     detected_user_name = best_match_name
-                    detected_member_id = best_match_id
+                    detected_member_id = member['member_id']
                     matched_face_center = ((face.bbox[0] + face.bbox[2]) / 2, (face.bbox[1] + face.bbox[3]) / 2)
                     break
 
-            # 2. 椅子と人（骨格つき）を検出。どちらもトラッカーなしのルーム専用モデルで、1フレーム1回
+            # 2. 椅子と人（骨格つき）を検出
             detected_seats = []
             seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
             if seat_det.boxes is not None and len(seat_det.boxes) > 0:
                 detected_seats = list(seat_det.boxes.xyxy.cpu().numpy())
 
-            persons = []   # (人ボックス, 骨格の座標, 骨格の信頼度)
+            persons = []
             pose_det = pose_model(frame, conf=0.3, verbose=False)[0]
             if pose_det.boxes is not None and len(pose_det.boxes) > 0 and pose_det.keypoints is not None:
                 p_boxes = pose_det.boxes.xyxy.cpu().numpy()
@@ -807,10 +669,9 @@ def camera_processing_loop():
                 persons = [(p_boxes[i], kxy_all[i], kcf_all[i]) for i in range(len(p_boxes))]
             person_boxes = [p[0] for p in persons]
 
-            # 椅子は、座った人に隠れて検出が途切れても、直前の位置を覚えて使う
             seat_boxes = update_seat_memory(seat_memory, detected_seats, person_boxes, current_time)
 
-            # 座り判定（椅子との重なり＋腰の位置＋脚の曲がり）
+            # 座り判定
             best = (False, -1.0, "no-person")
             sit_box = None
             for box, kxy_i, kcf_i in persons:
@@ -819,11 +680,17 @@ def camera_processing_loop():
                     best = res
                     sit_box = box
             is_sitting, overlap, why = best
-            active_machine_key = "bench_press"  # デフォルトのマシン
+            active_machine_key = "bench_press"
 
-            # 顔の持ち主が座っている人と別人なら名前を使わず、顔で特定できないときは服の色で推定
-            detected_user_name, detected_member_id, reid_used, reid_text = body_reid.resolve(
-                frame, sit_box, is_sitting, detected_user_name, detected_member_id, matched_face_center, current_time)
+            # 顔認識で特定した人が椅子の範囲にいるかチェック
+            if detected_user_name != "Guest":
+                seat_h = (sit_box[3] - sit_box[1]) if sit_box is not None else 0
+                inside = (matched_face_center is not None
+                          and sit_box is not None
+                          and sit_box[0] <= matched_face_center[0] <= sit_box[2]
+                          and (sit_box[1] - seat_h) <= matched_face_center[1] <= sit_box[3])
+                if sit_box is not None and not inside:
+                    detected_user_name, detected_member_id = "Guest", None
 
             # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
             for box, kxy_i, kcf_i in persons:
@@ -833,28 +700,25 @@ def camera_processing_loop():
                         cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), 4, (0, 0, 255), -1)
             for m in seat_memory:
                 b = m["box"]
-                color = (0, 165, 255) if m["live"] else (0, 255, 255)   # 検出中=オレンジ / 記憶のみ=黄
+                color = (0, 165, 255) if m["live"] else (0, 255, 255)
                 cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, 2)
             n_live = sum(1 for m in seat_memory if m["live"])
             cv2.putText(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
                                f"overlap={max(overlap, 0.0):.2f} why={why}",
                         (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            if reid_text:
-                cv2.putText(frame, reid_text, (20, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-            # 判定が変わったらターミナルにも出す（1秒に1回まで）
             log_key = (is_sitting, why)
             if log_key != sit_log["key"] and current_time - sit_log["time"] >= 1.0:
                 print(f"🪑 座り判定: {is_sitting} (why={why}, overlap={max(overlap, 0.0):.2f}, "
                       f"persons={len(persons)}, seats={n_live}+{len(seat_memory) - n_live}記憶)")
                 sit_log["key"], sit_log["time"] = log_key, current_time
 
-            # 顔認識が外れても、直前に特定した会員を保持（座っている間は保持し続ける）
+            # 顔認識が外れても、直前に特定した会員を保持（IdentityHolder）
             detected_user_name, detected_member_id, identity_held = identity_holder.update(
                 detected_user_name, detected_member_id, is_sitting, current_time)
-            held_mark = " (face lost)" if identity_held else (" (color)" if reid_used else "")
+            held_mark = " (face lost)" if identity_held else ""
 
-            # 5. 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
+            # 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
             sitting_now = detected_user_name != "Guest" and is_sitting
             confirmed, sit_since = sit_confirmer.update(sitting_now, current_time)
             if confirmed:
@@ -907,7 +771,6 @@ def get_register_page(request: Request):
 @app.post("/api/register")
 def api_register(data: RegisterRequest):
     try:
-        # メールアドレスを正規化（全角→半角、前後の空白除去）。SMTPは半角ASCIIしか扱えない
         email = unicodedata.normalize("NFKC", data.email).strip()
         if not email.isascii() or "@" not in email:
             return {"status": "error", "message": "メールアドレスは半角英数字で入力してください。"}
@@ -969,7 +832,7 @@ def api_register(data: RegisterRequest):
 
     except Exception as e:
         print(f"登録エラー: {e}")
-        traceback.print_exc()  # どの行で失敗したかをターミナルに出す
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
 @app.get("/video")
@@ -1022,19 +885,12 @@ async def ws_broadcast_loop():
 async def startup_event():
     asyncio.create_task(ws_broadcast_loop())
 
-# ==========================================
-# 🏠 メインダッシュボード（ログイン保護付き）
-# ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def read_index(request: Request):
     if "admin_user" not in request.session:
         return RedirectResponse(url="/admin/login", status_code=303)
-    
     return templates.TemplateResponse(request, "index.html", {})
 
-# ==========================================
-# 🔑 管理者認証・ログイン/ログアウトAPI
-# ==========================================
 @app.post("/api/admin/login")
 def api_admin_login(request: Request, data: AdminAuthRequest):
     conn = sqlite3.connect(DB_PATH)
@@ -1054,9 +910,6 @@ async def admin_logout(request: Request):
     request.session.clear()
     return RedirectResponse(url="/admin/login", status_code=303)
 
-# =========================================================================
-# 👥 管理者用：会員管理・一覧用エンドポイント
-# =========================================================================
 @app.get("/admin/members", response_class=HTMLResponse)
 def get_admin_members_page(request: Request):
     if "admin_user" not in request.session:
@@ -1087,7 +940,6 @@ def api_delete_member(member_id: str):
 
 @app.get("/api/admin/members/{member_id}/detail")
 def api_get_member_detail(member_id: str, request: Request):
-    """会員ごとの詳細：基本情報、入館履歴、マシンの利用履歴、集計"""
     if "admin_user" not in request.session:
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
 
@@ -1101,7 +953,6 @@ def api_get_member_detail(member_id: str, request: Request):
         conn.close()
         return JSONResponse({"status": "error", "message": "会員が見つかりません。"}, status_code=404)
 
-    # 入館ログには「名前 (会員ID)」の形で残っている。LIKEの特殊文字(_ %)はエスケープして検索
     escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%({escaped})"
     visit_where = "direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'"
@@ -1126,7 +977,6 @@ def api_get_member_detail(member_id: str, request: Request):
     u = cursor.fetchone()
     conn.close()
 
-    # 今、マシンを使っているか
     current = None
     for key, m_state in state.machine_states.items():
         if m_state.get("member_id") == member_id and m_state["user"] != "-":
@@ -1143,9 +993,6 @@ def api_get_member_detail(member_id: str, request: Request):
         "usages": usages,
     }
 
-# =========================================================================
-# 📋 管理者用：入退館・違反ログ一覧エンドポイント
-# =========================================================================
 @app.get("/admin/logs", response_class=HTMLResponse)
 def get_admin_logs_page(request: Request):
     if "admin_user" not in request.session:
@@ -1153,18 +1000,15 @@ def get_admin_logs_page(request: Request):
     return templates.TemplateResponse(request, "logs.html", {})
 
 def _member_label(names, raw):
-    """会員ID(または名前)を「名前 (会員ID)」の表示に。会員が削除済みなら、そのまま返す"""
     if raw in names:
         return f"{names[raw]} ({raw})"
     return raw
 
 def _member_id_from_label(label):
-    """入館ログの「名前 (会員ID)」から会員IDを取り出す。取れなければ None"""
     m = re.match(r"^.*\(([^()]+)\)$", label or "")
     return m.group(1) if m else None
 
 def _member_stats(cursor, member_id):
-    """会員の基本情報と集計。会員がいなければ None"""
     if not member_id:
         return None
     cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
@@ -1185,7 +1029,6 @@ def _fmt_seconds(sec):
     sec = int(round(sec or 0))
     return f"{sec // 60}分{sec % 60}秒" if sec >= 60 else f"{sec}秒"
 
-# main.py の適当なルーティング付近（例: @app.get("/", ... の下など）に追加
 @app.get("/live", response_class=HTMLResponse)
 async def read_live(request: Request):
     if "admin_user" not in request.session:
@@ -1194,7 +1037,6 @@ async def read_live(request: Request):
 
 @app.get("/api/admin/logs")
 def api_get_logs(request: Request):
-    """ゲートの入退館ログと、マシンの占有ログ（現在利用中を含む）を新しい順にまとめて返す"""
     if "admin_user" not in request.session:
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
 
@@ -1223,7 +1065,6 @@ def api_get_logs(request: Request):
     logs.sort(key=lambda x: x["timestamp"] or "", reverse=True)
     logs = logs[:100]
 
-    # 現在利用中のマシン（まだ記録されていないので、状態から作る）。先頭に並べる
     live = []
     for key, m in state.machine_states.items():
         if m["user"] != "-" and m["start_time"] is not None:
@@ -1237,7 +1078,6 @@ def api_get_logs(request: Request):
 
 @app.get("/api/admin/logs/{kind}/{ref}")
 def api_get_log_detail(kind: str, ref: str, request: Request):
-    """ログ1件の詳細。kind: gate（入退館）/ machine（占有の記録）/ active（現在利用中）"""
     if "admin_user" not in request.session:
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
     not_found = JSONResponse({"status": "error", "message": "ログが見つかりません。"}, status_code=404)
@@ -1268,7 +1108,7 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
             {"label": "記録された会員", "value": r["member_id"]},
             {"label": "結果", "value": "警告" if r["is_alert"] == 1 else "正常",
              "tone": "danger" if r["is_alert"] == 1 else "ok"},
-            {"label": "判定の理由", "value": r["note"] or "（記録なし：この機能の追加前のログです）"},
+            {"label": "判定の理由", "value": r["note"] or "（記録なし）"},
         ]
     elif kind == "machine":
         cursor.execute("SELECT id, member_id, machine, start_time, end_time, duration FROM occupancy_logs WHERE id = ?", (log_id,))
@@ -1312,9 +1152,6 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
     conn.close()
     return {"status": "success", "kind": kind, "title": title, "fields": fields, "member": member}
 
-# =========================================================================
-# 🔑 管理者用：登録・ログイン画面
-# =========================================================================
 @app.get("/admin/register", response_class=HTMLResponse)
 def get_admin_register_page(request: Request):
     return templates.TemplateResponse(request, "admin_register.html", {})
@@ -1337,9 +1174,6 @@ def api_admin_register(data: AdminAuthRequest):
 def get_admin_login_page(request: Request):
     return templates.TemplateResponse(request, "admin_login.html", {})
 
-# =========================================================================
-# 🏁 起動確認
-# =========================================================================
 if __name__ == "__main__":
     camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
     camera_thread.start()
