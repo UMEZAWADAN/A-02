@@ -199,6 +199,89 @@
         .badge-alert { background: #ffe6eb; color: var(--danger-color); border: 1px solid #ffadb8; border-radius: 2px; }
         .badge-normal { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
 
+        .badge-active { background: var(--accent-lime); color: var(--text-main); border: 1px solid var(--accent-lime-dark); }
+        .badge-type-gate { background: var(--surface-alt); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 2px; }
+        .badge-type-machine { background: #fff; color: var(--text-main); border: 1px solid var(--text-main); border-radius: 2px; }
+        .row-alert td { background: #fff5f7; }
+        .muted { color: var(--text-muted); font-family: monospace; font-size: 0.8rem; }
+
+        .filter-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 8px 0; }
+        .filter-btn {
+            background: var(--surface-alt);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 5px 14px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-weight: 800;
+            font-size: 0.75rem;
+            font-family: monospace;
+            letter-spacing: 0.06em;
+        }
+        .filter-btn:hover { border-color: var(--text-main); }
+        .filter-btn.active { background: var(--text-main); color: #fff; border-color: var(--text-main); }
+        .updated-at { margin-left: auto; font-family: monospace; font-size: 0.75rem; color: var(--text-muted); }
+
+        .btn-detail {
+            background: var(--surface-alt);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 4px 12px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-weight: 800;
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            transition: all 0.2s ease;
+        }
+        .btn-detail:hover { background: var(--accent-lime); border-color: var(--accent-lime-dark); }
+
+        /* 詳細モーダル */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: rgba(13, 13, 15, 0.45);
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal {
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            width: 100%;
+            max-width: 640px;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 24px;
+            box-sizing: border-box;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: left;
+        }
+        .modal-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            margin-bottom: 8px;
+        }
+        .modal-head h3 { margin: 0; font-size: 1.05rem; }
+        .modal-close { background: none; border: none; font-size: 1.6rem; line-height: 1; cursor: pointer; color: var(--text-muted); }
+        .modal-close:hover { color: var(--text-main); }
+        .field-row { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border-color); font-size: 0.9rem; }
+        .field-row .k { width: 130px; flex-shrink: 0; font-family: monospace; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; padding-top: 2px; }
+        .field-row .v { flex: 1; word-break: break-word; }
+        .tone-danger { color: var(--danger-color); font-weight: 800; }
+        .tone-ok { color: #3b6b00; font-weight: 800; }
+        .detail-section-title { font-family: monospace; font-size: 0.8rem; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; margin: 22px 0 4px 0; }
+        .detail-muted { color: var(--text-muted); font-size: 0.85rem; }
+
         /* 共通フッター＆ティッカー */
         .site-footer {
             background: var(--surface-card);
@@ -291,22 +374,41 @@
     <div class="page-content">
         <div class="cyber-panel-full" style="margin-top: 20px;">
             <h2>ACCESS & SECURITY LOGS (LAST 100)</h2>
+            <div class="filter-bar">
+                <button class="filter-btn active" data-filter="all">ALL</button>
+                <button class="filter-btn" data-filter="gate">GATE (入退館)</button>
+                <button class="filter-btn" data-filter="machine">MACHINE (マシン占有)</button>
+                <span class="updated-at" id="updated-at"></span>
+            </div>
             <table class="cyber-table">
                 <thead>
                     <tr>
                         <th>ID</th>
                         <th>Timestamp</th>
-                        <th>Direction</th>
-                        <th>Member ID</th>
+                        <th>Type</th>
+                        <th>Event</th>
+                        <th>Member</th>
                         <th>Status</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody id="logs-table-body">
                     <tr>
-                        <td colspan="5" style="color: var(--text-muted); padding: 20px;">WAITING FOR DATA STREAM...</td>
+                        <td colspan="7" style="color: var(--text-muted); padding: 20px;">WAITING FOR DATA STREAM...</td>
                     </tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- ログ詳細モーダル -->
+    <div class="modal-overlay" id="detail-overlay">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+            <div class="modal-head">
+                <h3 id="detail-title">LOADING...</h3>
+                <button class="modal-close" id="detail-close" aria-label="閉じる">&times;</button>
+            </div>
+            <div id="detail-body"></div>
         </div>
     </div>
 
@@ -328,42 +430,167 @@
     </footer>
 
     <script>
+        let allLogs = [];
+        let currentFilter = 'all';
+        let lastSignature = '';
+
+        // 画面に出す文字列は必ずエスケープする
+        function esc(s) {
+            return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        function fmtDuration(sec) {
+            sec = Math.round(sec || 0);
+            const m = Math.floor(sec / 60), s = sec % 60;
+            return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+        }
+
+        const STATUS_BADGES = {
+            alert:    ['badge-alert',  'ALERT'],
+            normal:   ['badge-normal', 'NORMAL'],
+            overtime: ['badge-alert',  'OVERTIME'],
+            active:   ['badge-active', 'IN USE'],
+        };
+
+        function renderLogs() {
+            const tbody = document.getElementById('logs-table-body');
+            tbody.innerHTML = '';
+            const logs = allLogs.filter(l => currentFilter === 'all' || l.type === currentFilter);
+
+            if (logs.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" style="color: var(--text-muted); padding: 20px;">記録されているログはありません。</td></tr>`;
+                return;
+            }
+
+            logs.forEach(log => {
+                const tr = document.createElement('tr');
+                if (log.status === 'alert' || log.status === 'overtime') tr.className = 'row-alert';
+
+                const typeBadge = log.type === 'gate'
+                    ? '<span class="badge badge-type-gate">GATE</span>'
+                    : '<span class="badge badge-type-machine">MACHINE</span>';
+
+                let eventCell;
+                if (log.type === 'gate') {
+                    eventCell = log.event === 'IN'
+                        ? '<span class="badge badge-in">IN</span>'
+                        : '<span class="badge badge-out">OUT</span>';
+                } else {
+                    eventCell = `${esc(log.event)} <span class="muted">${esc(fmtDuration(log.duration))}</span>`;
+                }
+
+                const [badgeClass, badgeText] = STATUS_BADGES[log.status] || STATUS_BADGES.normal;
+
+                tr.innerHTML = `
+                    <td style="color: var(--text-muted); font-family: monospace;">${esc(log.display_id)}</td>
+                    <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${esc(log.timestamp)}</td>
+                    <td>${typeBadge}</td>
+                    <td>${eventCell}</td>
+                    <td style="font-family: monospace; font-weight: 700;">${esc(log.member)}</td>
+                    <td><span class="badge ${badgeClass}">${badgeText}</span></td>
+                `;
+                const actionTd = document.createElement('td');
+                const btn = document.createElement('button');
+                btn.className = 'btn-detail';
+                btn.textContent = 'DETAIL';
+                btn.addEventListener('click', () => openDetail(log.kind, log.ref));
+                actionTd.appendChild(btn);
+                tr.appendChild(actionTd);
+                tbody.appendChild(tr);
+            });
+        }
+
         async function fetchLogs() {
             try {
                 const response = await fetch('/api/admin/logs');
-                const data = await response.json();
-                const tbody = document.getElementById('logs-table-body');
-                tbody.innerHTML = '';
-
-                if (data.logs.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" style="color: var(--text-muted); padding: 20px;">記録されているログはありません。</td></tr>`;
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
                     return;
                 }
-
-                data.logs.forEach(log => {
-                    const tr = document.createElement('tr');
-                    const dirBadge = log.direction === 'IN' 
-                        ? '<span class="badge badge-in">IN</span>' 
-                        : '<span class="badge badge-out">OUT</span>';
-                    const alertBadge = log.is_alert === 1 
-                        ? '<span class="badge badge-alert">ALERT</span>' 
-                        : '<span class="badge badge-normal">NORMAL</span>';
-
-                    tr.innerHTML = `
-                        <td style="color: var(--text-muted); font-family: monospace;">${log.id}</td>
-                        <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${log.timestamp}</td>
-                        <td>${dirBadge}</td>
-                        <td style="font-family: monospace; font-weight: 700;">${log.member_id}</td>
-                        <td>${alertBadge}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
+                const data = await response.json();
+                document.getElementById('updated-at').textContent =
+                    'UPDATED ' + new Date().toLocaleTimeString('ja-JP');
+                const signature = JSON.stringify(data.logs);
+                if (signature === lastSignature) return;   // 変化がなければ描画しない
+                lastSignature = signature;
+                allLogs = data.logs;
+                renderLogs();
             } catch (err) {
                 console.error("ログデータの取得に失敗しました", err);
             }
         }
 
+        // ---- フィルタ ----
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                currentFilter = btn.dataset.filter;
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b === btn));
+                renderLogs();
+            });
+        });
+
+        // ---- 詳細モーダル ----
+        const overlay = document.getElementById('detail-overlay');
+        function closeDetail() { overlay.classList.remove('open'); }
+        document.getElementById('detail-close').addEventListener('click', closeDetail);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDetail(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+
+        async function openDetail(kind, ref) {
+            const body = document.getElementById('detail-body');
+            document.getElementById('detail-title').textContent = 'LOADING...';
+            body.innerHTML = '<p class="detail-muted">読み込み中...</p>';
+            overlay.classList.add('open');
+
+            try {
+                const response = await fetch(`/api/admin/logs/${encodeURIComponent(kind)}/${encodeURIComponent(ref)}`);
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                const d = await response.json();
+                if (d.status !== 'success') {
+                    document.getElementById('detail-title').textContent = 'ERROR';
+                    body.innerHTML = `<p>${esc(d.message)}</p>`;
+                    return;
+                }
+                renderDetail(d);
+            } catch (err) {
+                document.getElementById('detail-title').textContent = 'ERROR';
+                body.innerHTML = '<p>詳細の取得に失敗しました。</p>';
+            }
+        }
+
+        function renderDetail(d) {
+            document.getElementById('detail-title').textContent = d.title;
+
+            const fieldRows = d.fields.map(f => `
+                <div class="field-row">
+                    <div class="k">${esc(f.label)}</div>
+                    <div class="v ${f.tone ? 'tone-' + esc(f.tone) : ''}">${esc(f.value)}</div>
+                </div>`).join('');
+
+            let memberBlock;
+            if (d.member) {
+                const m = d.member;
+                memberBlock = `
+                    <div class="detail-section-title">Member</div>
+                    <div class="field-row"><div class="k">Name</div><div class="v">${esc(m.name)} <span class="muted">${esc(m.member_id)}</span></div></div>
+                    <div class="field-row"><div class="k">Email</div><div class="v">${esc(m.email)}</div></div>
+                    <div class="field-row"><div class="k">Face data</div><div class="v">${m.has_face ? '登録済み' : '<span class="tone-danger">未登録</span>'}</div></div>
+                    <div class="field-row"><div class="k">Visits</div><div class="v">${esc(m.visit_count)} 回（最終: ${esc(m.last_visit || '-')}）</div></div>
+                    <div class="field-row"><div class="k">Machine uses</div><div class="v">${esc(m.usage_count)} 回 / 合計 ${esc(fmtDuration(m.total_usage_seconds))}</div></div>`;
+            } else {
+                memberBlock = `
+                    <div class="detail-section-title">Member</div>
+                    <p class="detail-muted">会員を特定できていないログ、または会員が削除済みです。</p>`;
+            }
+
+            document.getElementById('detail-body').innerHTML = fieldRows + memberBlock;
+        }
+
         fetchLogs();
+        setInterval(fetchLogs, 5000);   // 5秒ごとに自動更新
     </script>
 </body>
 </html>
