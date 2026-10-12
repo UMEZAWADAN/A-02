@@ -8,6 +8,7 @@ from io import BytesIO
 import json
 import numpy as np
 import os
+import re
 import smtplib
 import sqlite3
 import threading
@@ -18,7 +19,7 @@ import uuid
 from datetime import datetime
 from queue import Queue
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel
@@ -144,6 +145,13 @@ def init_database():
             duration REAL
         )
     """)
+    # 既存のDBには machine 列が無いので、足りなければ追加する
+    cursor.execute("PRAGMA table_info(occupancy_logs)")
+    if "machine" not in [row[1] for row in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE occupancy_logs ADD COLUMN machine TEXT")
+    cursor.execute("PRAGMA table_info(passing_logs)")
+    if "note" not in [row[1] for row in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE passing_logs ADD COLUMN note TEXT")
     conn.commit()
     conn.close()
 
@@ -178,7 +186,7 @@ class SystemStateManager:
         self.active_users = {} 
         
         self.machine_states = {
-            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None, "last_seen": None} 
+            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None, "last_seen": None, "member_id": None} 
             for k in MACHINE_LIMITS.keys()
         }
         
@@ -239,7 +247,7 @@ class SystemStateManager:
             self.co_trailing_alert = state
             self.push_update()
 
-    def register_pass(self, direction: str, member_id: str, is_alert: int):
+    def register_pass(self, direction: str, member_id: str, is_alert: int, note: str = None):
         with self._lock:
             if direction == "IN":
                 self.in_count += 1
@@ -248,27 +256,50 @@ class SystemStateManager:
             
             conn = sqlite3.connect(DB_PATH)
             conn.cursor().execute(
-                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert) VALUES (?, ?, ?, ?)",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, member_id, is_alert)
+                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (?, ?, ?, ?, ?)",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, member_id, is_alert, note)
             )
             conn.commit()
             conn.close()
             self.push_update()
 
-    def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None):
+    def _log_occupancy(self, m_key, m_state):
+        """利用が終わった占有を occupancy_logs に記録する（self._lock を持った状態で呼ぶ）"""
+        if m_state["user"] == "-" or m_state["start_time"] is None or m_state["duration"] <= 0:
+            return
+        start = datetime.fromtimestamp(m_state["start_time"])
+        end = datetime.fromtimestamp(m_state["start_time"] + m_state["duration"])
+        who = m_state.get("member_id") or m_state["user"]   # 会員IDが不明なら名前で残す
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.cursor().execute(
+                "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration, machine) VALUES (?, ?, ?, ?, ?)",
+                (who, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"),
+                 float(m_state["duration"]), m_key)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"⚠️ 占有ログの保存に失敗: {e}")
+
+    def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None, member_id=None):
         with self._lock:
             for m_key in self.machine_states.keys():
                 if m_key == active_machine_key and user_name != "Guest":
                     m_state = self.machine_states[m_key]
                     m_state["last_seen"] = current_time
                     if m_state["user"] != user_name:
+                        self._log_occupancy(m_key, m_state)   # 別の人に替わったら、前の人の利用を記録
                         m_state["user"] = user_name
+                        m_state["member_id"] = member_id
                         m_state["start_time"] = started_at if started_at is not None else current_time
                         m_state["duration"] = current_time - m_state["start_time"]
                     else:
+                        if member_id is not None:
+                            m_state["member_id"] = member_id
                         if m_state["start_time"] is not None:
                             m_state["duration"] = current_time - m_state["start_time"]
-                    
+
                     limit = MACHINE_LIMITS[m_key]["limit"]
                     if m_state["duration"] > limit:
                         m_state["status"] = "overtime"
@@ -276,14 +307,15 @@ class SystemStateManager:
                         m_state["status"] = "using"
 
     def release_idle_machines(self, current_time):
-        """座っている検知が SEAT_RELEASE_GRACE 秒途切れたら利用終了。戻ってきたら0秒から計測し直す"""
+        """座っている検知が SEAT_RELEASE_GRACE 秒途切れたら利用終了（記録して空きに戻す）。戻ってきたら0秒から計測し直す"""
         with self._lock:
-            for m_state in self.machine_states.values():
+            for m_key, m_state in self.machine_states.items():
                 if m_state["user"] != "-" and m_state["last_seen"] is not None \
                         and (current_time - m_state["last_seen"]) > SEAT_RELEASE_GRACE:
                     print(f"🪑 【利用終了】 {m_state['user']} / 占有 {m_state['duration']:.0f}秒")
+                    self._log_occupancy(m_key, m_state)
                     m_state.update({"user": "-", "duration": 0.0, "status": "free",
-                                    "start_time": None, "last_seen": None})
+                                    "start_time": None, "last_seen": None, "member_id": None})
 
     def push_update(self):
         machines_payload = []
@@ -379,19 +411,20 @@ class IdentityHolder:
     """顔認識が一瞬外れても、直前に特定した会員を保持する。座っている間は保持し続け、離れて一定時間でリセット"""
     def __init__(self):
         self.name = None
+        self.member_id = None
         self.time = 0.0
 
-    def update(self, recognized_name, is_sitting, now):
-        """recognized_name: 今フレームで特定できた会員名（できなければ "Guest"）。戻り値: (使う名前, 保持中か)"""
+    def update(self, recognized_name, recognized_id, is_sitting, now):
+        """recognized_name/id: 今フレームで特定できた会員（できなければ "Guest", None）。戻り値: (使う名前, 会員ID, 保持中か)"""
         if recognized_name != "Guest":
-            self.name, self.time = recognized_name, now
-            return recognized_name, False
+            self.name, self.member_id, self.time = recognized_name, recognized_id, now
+            return recognized_name, recognized_id, False
         if self.name is not None and (now - self.time) <= IDENTITY_HOLD_SECONDS:
             if is_sitting:
                 self.time = now
-            return self.name, True
-        self.name = None
-        return "Guest", False
+            return self.name, self.member_id, True
+        self.name, self.member_id = None, None
+        return "Guest", None, False
 
 def _color_hist(region):
     """領域の色の分布。照明が変わっても崩れにくいよう、「色み(r,g比)」と「明るさ」を分けて数える。
@@ -480,10 +513,10 @@ class BodyReID:
             self.gallery.add(member_id, name, feat, now)
 
     def resolve(self, frame, sit_box, is_sitting, face_name, face_id, face_center, now):
-        """戻り値: (使う名前, Re-IDで決めたか, 画面表示用の文字列)"""
+        """戻り値: (使う名前, 会員ID, Re-IDで決めたか, 画面表示用の文字列)"""
         if not is_sitting or sit_box is None:
             self.result = None
-            return face_name, False, ""
+            return face_name, face_id, False, ""
 
         # 顔の持ち主が「座っている人」と別人なら、その顔の名前は使わない
         if face_name != "Guest":
@@ -500,7 +533,7 @@ class BodyReID:
                 feat = extract_body_feature(frame, sit_box)
                 if feat is not None:
                     self.gallery.add(face_id, face_name, feat, now)
-            return face_name, False, ""
+            return face_name, face_id, False, ""
 
         # 顔で特定できない：服の色で推定（一定間隔）
         if now - self.last_try >= REID_INTERVAL:
@@ -509,15 +542,15 @@ class BodyReID:
             self.result = self.gallery.identify(feat, now) if feat is not None else None
             self.result_time = now
         if self.result is not None and now - self.result_time <= REID_INTERVAL * 3:
-            _, name, score, margin = self.result
+            mid, name, score, margin = self.result
             text = f"color={score:.2f}({name}) margin={margin:.2f}"
             if score >= REID_THRESHOLD and margin >= REID_MARGIN:
                 if self.logged_name != name:
                     print(f"🧍 服の色で特定: {name} (score={score:.2f}, margin={margin:.2f})")
                     self.logged_name = name
-                return name, True, text
-            return "Guest", False, text
-        return "Guest", False, ""
+                return name, mid, True, text
+            return "Guest", None, False, text
+        return "Guest", None, False, ""
 
 def _box_inter(a, b):
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -707,14 +740,14 @@ def camera_processing_loop():
                             )
                             if ok:
                                 print(f"✅ 【入場OK】 {state.last_scanned_qr} / 顔の類似度 {best_sim:.2f}")
-                                state.register_pass("IN", state.last_scanned_qr, 0)
+                                state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
 
                                 body_reid.add_entrance(frame, box, state.last_member_id,
                                                        state.last_scanned_qr.split(" (")[0], current_time)
                             else:
                                 print(f"🚨 【入場警告】 {reason}")
                                 state.set_alert(True)
-                                state.register_pass("IN", "Unknown / Face Mismatch", 1)
+                                state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
                         elif prev_x > LINE_X and x_center <= LINE_X:
                             state.register_pass("OUT", "Unknown", 0)
                             state.set_alert(False)
@@ -789,7 +822,7 @@ def camera_processing_loop():
             active_machine_key = "bench_press"  # デフォルトのマシン
 
             # 顔の持ち主が座っている人と別人なら名前を使わず、顔で特定できないときは服の色で推定
-            detected_user_name, reid_used, reid_text = body_reid.resolve(
+            detected_user_name, detected_member_id, reid_used, reid_text = body_reid.resolve(
                 frame, sit_box, is_sitting, detected_user_name, detected_member_id, matched_face_center, current_time)
 
             # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
@@ -817,14 +850,16 @@ def camera_processing_loop():
                 sit_log["key"], sit_log["time"] = log_key, current_time
 
             # 顔認識が外れても、直前に特定した会員を保持（座っている間は保持し続ける）
-            detected_user_name, identity_held = identity_holder.update(detected_user_name, is_sitting, current_time)
+            detected_user_name, detected_member_id, identity_held = identity_holder.update(
+                detected_user_name, detected_member_id, is_sitting, current_time)
             held_mark = " (face lost)" if identity_held else (" (color)" if reid_used else "")
 
             # 5. 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
             sitting_now = detected_user_name != "Guest" and is_sitting
             confirmed, sit_since = sit_confirmer.update(sitting_now, current_time)
             if confirmed:
-                state.update_machine_occupancy(active_machine_key, detected_user_name, current_time, started_at=sit_since)
+                state.update_machine_occupancy(active_machine_key, detected_user_name, current_time,
+                                               started_at=sit_since, member_id=detected_member_id)
                 cv2.putText(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             elif sitting_now:
                 cv2.putText(frame, f"Sitting? confirming {current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
@@ -1050,6 +1085,64 @@ def api_delete_member(member_id: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/admin/members/{member_id}/detail")
+def api_get_member_detail(member_id: str, request: Request):
+    """会員ごとの詳細：基本情報、入館履歴、マシンの利用履歴、集計"""
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
+                   (member_id,))
+    member = cursor.fetchone()
+    if member is None:
+        conn.close()
+        return JSONResponse({"status": "error", "message": "会員が見つかりません。"}, status_code=404)
+
+    # 入館ログには「名前 (会員ID)」の形で残っている。LIKEの特殊文字(_ %)はエスケープして検索
+    escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%({escaped})"
+    visit_where = "direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'"
+    cursor.execute(f"SELECT timestamp FROM passing_logs WHERE {visit_where} ORDER BY id DESC LIMIT 50", (pattern,))
+    visits = [row["timestamp"] for row in cursor.fetchall()]
+    cursor.execute(f"SELECT COUNT(*) AS c, MAX(timestamp) AS last FROM passing_logs WHERE {visit_where}", (pattern,))
+    v = cursor.fetchone()
+
+    cursor.execute("SELECT machine, start_time, end_time, duration FROM occupancy_logs WHERE member_id = ? ORDER BY id DESC LIMIT 50",
+                   (member_id,))
+    usages = []
+    for row in cursor.fetchall():
+        info = MACHINE_LIMITS.get(row["machine"], {})
+        usages.append({
+            "machine": info.get("name", row["machine"] or "-"),
+            "start_time": row["start_time"],
+            "end_time": row["end_time"],
+            "duration": row["duration"],
+            "overtime": bool(info) and (row["duration"] or 0) > info["limit"],
+        })
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = ?", (member_id,))
+    u = cursor.fetchone()
+    conn.close()
+
+    # 今、マシンを使っているか
+    current = None
+    for key, m_state in state.machine_states.items():
+        if m_state.get("member_id") == member_id and m_state["user"] != "-":
+            current = {"machine": MACHINE_LIMITS[key]["name"], "duration": m_state["duration"], "status": m_state["status"]}
+
+    return {
+        "status": "success",
+        "member": {"member_id": member["member_id"], "name": member["name"], "email": member["email"],
+                   "has_face": bool(member["has_face"])},
+        "summary": {"visit_count": v["c"], "last_visit": v["last"],
+                    "usage_count": u["c"], "total_usage_seconds": u["total"]},
+        "current": current,
+        "visits": visits,
+        "usages": usages,
+    }
+
 # =========================================================================
 # 📋 管理者用：入退館・違反ログ一覧エンドポイント
 # =========================================================================
@@ -1059,15 +1152,158 @@ def get_admin_logs_page(request: Request):
         return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "logs.html", {})
 
+def _member_label(names, raw):
+    """会員ID(または名前)を「名前 (会員ID)」の表示に。会員が削除済みなら、そのまま返す"""
+    if raw in names:
+        return f"{names[raw]} ({raw})"
+    return raw
+
+def _member_id_from_label(label):
+    """入館ログの「名前 (会員ID)」から会員IDを取り出す。取れなければ None"""
+    m = re.match(r"^.*\(([^()]+)\)$", label or "")
+    return m.group(1) if m else None
+
+def _member_stats(cursor, member_id):
+    """会員の基本情報と集計。会員がいなければ None"""
+    if not member_id:
+        return None
+    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
+                   (member_id,))
+    m = cursor.fetchone()
+    if m is None:
+        return None
+    escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    cursor.execute("SELECT COUNT(*) AS c, MAX(timestamp) AS last FROM passing_logs "
+                   "WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'", (f"%({escaped})",))
+    v = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = ?", (member_id,))
+    u = cursor.fetchone()
+    return {"member_id": m["member_id"], "name": m["name"], "email": m["email"], "has_face": bool(m["has_face"]),
+            "visit_count": v["c"], "last_visit": v["last"], "usage_count": u["c"], "total_usage_seconds": u["total"]}
+
+def _fmt_seconds(sec):
+    sec = int(round(sec or 0))
+    return f"{sec // 60}分{sec % 60}秒" if sec >= 60 else f"{sec}秒"
+
 @app.get("/api/admin/logs")
-def api_get_logs():
+def api_get_logs(request: Request):
+    """ゲートの入退館ログと、マシンの占有ログ（現在利用中を含む）を新しい順にまとめて返す"""
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    cursor.execute("SELECT member_id, name FROM members")
+    names = {row["member_id"]: row["name"] for row in cursor.fetchall()}
+
+    logs = []
     cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
-    logs = [dict(row) for row in cursor.fetchall()]
+    for r in cursor.fetchall():
+        logs.append({"kind": "gate", "ref": str(r["id"]), "display_id": f"G-{r['id']}", "type": "gate",
+                     "timestamp": r["timestamp"], "event": r["direction"], "member": r["member_id"],
+                     "status": "alert" if r["is_alert"] == 1 else "normal", "duration": None})
+
+    cursor.execute("SELECT id, member_id, machine, start_time, duration FROM occupancy_logs ORDER BY id DESC LIMIT 100")
+    for r in cursor.fetchall():
+        info = MACHINE_LIMITS.get(r["machine"], {})
+        over = bool(info) and (r["duration"] or 0) > info["limit"]
+        logs.append({"kind": "machine", "ref": str(r["id"]), "display_id": f"M-{r['id']}", "type": "machine",
+                     "timestamp": r["start_time"], "event": info.get("name", r["machine"] or "-"),
+                     "member": _member_label(names, r["member_id"]),
+                     "status": "overtime" if over else "normal", "duration": r["duration"]})
     conn.close()
-    return {"logs": logs}
+    logs.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+    logs = logs[:100]
+
+    # 現在利用中のマシン（まだ記録されていないので、状態から作る）。先頭に並べる
+    live = []
+    for key, m in state.machine_states.items():
+        if m["user"] != "-" and m["start_time"] is not None:
+            live.append({"kind": "active", "ref": key, "display_id": "LIVE", "type": "machine",
+                         "timestamp": datetime.fromtimestamp(m["start_time"]).strftime("%Y-%m-%d %H:%M:%S"),
+                         "event": MACHINE_LIMITS[key]["name"],
+                         "member": _member_label(names, m.get("member_id") or m["user"]),
+                         "status": "overtime" if m["status"] == "overtime" else "active",
+                         "duration": m["duration"]})
+    return {"status": "success", "logs": live + logs}
+
+@app.get("/api/admin/logs/{kind}/{ref}")
+def api_get_log_detail(kind: str, ref: str, request: Request):
+    """ログ1件の詳細。kind: gate（入退館）/ machine（占有の記録）/ active（現在利用中）"""
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+    not_found = JSONResponse({"status": "error", "message": "ログが見つかりません。"}, status_code=404)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    fields, title, member_id = [], "", None
+
+    if kind in ("gate", "machine"):
+        try:
+            log_id = int(ref)
+        except ValueError:
+            conn.close()
+            return not_found
+
+    if kind == "gate":
+        cursor.execute("SELECT id, timestamp, direction, member_id, is_alert, note FROM passing_logs WHERE id = ?", (log_id,))
+        r = cursor.fetchone()
+        if r is None:
+            conn.close()
+            return not_found
+        member_id = _member_id_from_label(r["member_id"])
+        title = f"{'入館' if r['direction'] == 'IN' else '退館'}ログ G-{r['id']}"
+        fields = [
+            {"label": "日時", "value": r["timestamp"]},
+            {"label": "種別", "value": "入館 (IN)" if r["direction"] == "IN" else "退館 (OUT)"},
+            {"label": "記録された会員", "value": r["member_id"]},
+            {"label": "結果", "value": "警告" if r["is_alert"] == 1 else "正常",
+             "tone": "danger" if r["is_alert"] == 1 else "ok"},
+            {"label": "判定の理由", "value": r["note"] or "（記録なし：この機能の追加前のログです）"},
+        ]
+    elif kind == "machine":
+        cursor.execute("SELECT id, member_id, machine, start_time, end_time, duration FROM occupancy_logs WHERE id = ?", (log_id,))
+        r = cursor.fetchone()
+        if r is None:
+            conn.close()
+            return not_found
+        member_id = r["member_id"]
+        info = MACHINE_LIMITS.get(r["machine"], {})
+        over = bool(info) and (r["duration"] or 0) > info["limit"]
+        title = f"マシン利用ログ M-{r['id']}"
+        fields = [
+            {"label": "マシン", "value": info.get("name", r["machine"] or "-")},
+            {"label": "開始", "value": r["start_time"]},
+            {"label": "終了", "value": r["end_time"]},
+            {"label": "利用時間", "value": _fmt_seconds(r["duration"])},
+            {"label": "上限", "value": _fmt_seconds(info["limit"]) if info else "-"},
+            {"label": "判定", "value": "時間超過" if over else "範囲内", "tone": "danger" if over else "ok"},
+        ]
+    elif kind == "active":
+        m = state.machine_states.get(ref)
+        if m is None or m["user"] == "-" or m["start_time"] is None:
+            conn.close()
+            return not_found
+        member_id = m.get("member_id")
+        over = m["status"] == "overtime"
+        title = f"現在利用中：{MACHINE_LIMITS[ref]['name']}"
+        fields = [
+            {"label": "マシン", "value": MACHINE_LIMITS[ref]["name"]},
+            {"label": "利用者", "value": m["user"]},
+            {"label": "開始", "value": datetime.fromtimestamp(m["start_time"]).strftime("%Y-%m-%d %H:%M:%S")},
+            {"label": "経過時間", "value": _fmt_seconds(m["duration"])},
+            {"label": "上限", "value": _fmt_seconds(MACHINE_LIMITS[ref]["limit"])},
+            {"label": "状態", "value": "時間超過" if over else "利用中", "tone": "danger" if over else "ok"},
+        ]
+    else:
+        conn.close()
+        return not_found
+
+    member = _member_stats(cursor, member_id)
+    conn.close()
+    return {"status": "success", "kind": kind, "title": title, "fields": fields, "member": member}
 
 # =========================================================================
 # 🔑 管理者用：登録・ログイン画面
