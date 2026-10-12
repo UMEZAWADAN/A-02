@@ -1185,6 +1185,13 @@ def _fmt_seconds(sec):
     sec = int(round(sec or 0))
     return f"{sec // 60}分{sec % 60}秒" if sec >= 60 else f"{sec}秒"
 
+# main.py の適当なルーティング付近（例: @app.get("/", ... の下など）に追加
+@app.get("/live", response_class=HTMLResponse)
+async def read_live(request: Request):
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    return templates.TemplateResponse(request, "live.html", {})
+
 @app.get("/api/admin/logs")
 def api_get_logs(request: Request):
     """ゲートの入退館ログと、マシンの占有ログ（現在利用中を含む）を新しい順にまとめて返す"""
