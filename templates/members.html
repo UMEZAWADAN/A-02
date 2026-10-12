@@ -201,6 +201,105 @@
             color: #fff;
         }
 
+        .btn-detail {
+            background: var(--surface-alt);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 4px 12px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-weight: 800;
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            transition: all 0.2s ease;
+        }
+        .btn-detail:hover {
+            background: var(--accent-lime);
+            border-color: var(--accent-lime-dark);
+        }
+
+        /* 詳細モーダル */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: rgba(13, 13, 15, 0.45);
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal {
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            width: 100%;
+            max-width: 760px;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 24px;
+            box-sizing: border-box;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: left;
+        }
+        .modal-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            margin-bottom: 16px;
+        }
+        .modal-head h3 { margin: 0; font-size: 1.1rem; }
+        .modal-head .sub { font-family: monospace; font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 1.6rem;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+        .modal-close:hover { color: var(--text-main); }
+        .detail-info { font-size: 0.9rem; line-height: 1.8; margin-bottom: 16px; }
+        .detail-info b { font-family: monospace; font-size: 0.75rem; color: var(--text-muted); display: inline-block; width: 110px; }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 12px;
+            text-align: center;
+        }
+        .stat-card .label { font-family: monospace; font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+        .stat-card .value { font-size: 1.1rem; font-weight: 800; margin-top: 6px; word-break: break-all; }
+        .detail-section-title {
+            font-family: monospace;
+            font-size: 0.8rem;
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin: 20px 0 6px 0;
+        }
+        .detail-muted { color: var(--text-muted); font-size: 0.85rem; }
+        .tag-over { color: var(--danger-color); font-weight: 800; }
+        .tag-badge {
+            display: inline-block;
+            background: var(--accent-lime);
+            padding: 1px 8px;
+            border-radius: 2px;
+            font-weight: 800;
+            font-size: 0.8rem;
+        }
+
         /* 共通フッター＆ティッカー */
         .site-footer {
             background: var(--surface-card);
@@ -313,6 +412,20 @@
         </div>
     </div>
 
+    <!-- 会員詳細モーダル -->
+    <div class="modal-overlay" id="detail-overlay">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+            <div class="modal-head">
+                <div>
+                    <h3 id="detail-title">LOADING...</h3>
+                    <div class="sub" id="detail-sub"></div>
+                </div>
+                <button class="modal-close" id="detail-close" aria-label="閉じる">&times;</button>
+            </div>
+            <div id="detail-body"></div>
+        </div>
+    </div>
+
     <!-- フッター -->
     <footer class="site-footer">
         <div class="ticker-wrap">
@@ -332,6 +445,17 @@
     </footer>
 
     <script>
+        // 画面に出す文字列は必ずエスケープする（登録時の名前などに含まれるHTMLを実行させない）
+        function esc(s) {
+            return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        function fmtDuration(sec) {
+            sec = Math.round(sec || 0);
+            const m = Math.floor(sec / 60), s = sec % 60;
+            return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+        }
+
         async function fetchMembers() {
             try {
                 const response = await fetch('/api/admin/members');
@@ -346,18 +470,125 @@
 
                 data.members.forEach(member => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td style="font-family: monospace; font-weight: 700;">${member.member_id}</td>
-                        <td style="font-weight: 700;">${member.name}</td>
-                        <td style="font-family: monospace;">${member.email}</td>
-                        <td style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">${member.qr_token.substring(0, 15)}...</td>
-                        <td><button class="btn-delete" onclick="deleteMember('${member.member_id}', '${member.name}')">DELETE</button></td>
-                    `;
+                    const cells = [
+                        [member.member_id, 'font-family: monospace; font-weight: 700;'],
+                        [member.name, 'font-weight: 700;'],
+                        [member.email, 'font-family: monospace;'],
+                        [(member.qr_token || '').substring(0, 15) + '...', 'font-family: monospace; font-size: 0.8rem; color: var(--text-muted);'],
+                    ];
+                    cells.forEach(([text, style]) => {
+                        const td = document.createElement('td');
+                        td.style.cssText = style;
+                        td.textContent = text;
+                        tr.appendChild(td);
+                    });
+
+                    const actionTd = document.createElement('td');
+                    const detailBtn = document.createElement('button');
+                    detailBtn.className = 'btn-detail';
+                    detailBtn.textContent = 'DETAIL';
+                    detailBtn.addEventListener('click', () => openDetail(member.member_id));
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'btn-delete';
+                    deleteBtn.textContent = 'DELETE';
+                    deleteBtn.addEventListener('click', () => deleteMember(member.member_id, member.name));
+                    actionTd.append(detailBtn, ' ', deleteBtn);
+                    tr.appendChild(actionTd);
+
                     tbody.appendChild(tr);
                 });
             } catch (err) {
                 console.error("会員データの取得に失敗しました", err);
             }
+        }
+
+        // ---- 会員の詳細（履歴）モーダル ----
+        const overlay = document.getElementById('detail-overlay');
+
+        function closeDetail() { overlay.classList.remove('open'); }
+        document.getElementById('detail-close').addEventListener('click', closeDetail);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDetail(); });
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+
+        async function openDetail(memberId) {
+            const body = document.getElementById('detail-body');
+            document.getElementById('detail-title').textContent = 'LOADING...';
+            document.getElementById('detail-sub').textContent = '';
+            body.innerHTML = '<p class="detail-muted">読み込み中...</p>';
+            overlay.classList.add('open');
+
+            try {
+                const response = await fetch(`/api/admin/members/${encodeURIComponent(memberId)}/detail`);
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                const d = await response.json();
+                if (d.status !== 'success') {
+                    document.getElementById('detail-title').textContent = 'ERROR';
+                    body.innerHTML = `<p>${esc(d.message)}</p>`;
+                    return;
+                }
+                renderDetail(d);
+            } catch (err) {
+                document.getElementById('detail-title').textContent = 'ERROR';
+                body.innerHTML = '<p>履歴の取得に失敗しました。</p>';
+            }
+        }
+
+        function renderDetail(d) {
+            document.getElementById('detail-title').textContent = d.member.name;
+            document.getElementById('detail-sub').textContent = d.member.member_id;
+
+            let currentText = '<span class="detail-muted">利用していません</span>';
+            if (d.current) {
+                const over = d.current.status === 'overtime' ? ' <span class="tag-over">（時間超過）</span>' : '';
+                currentText = `<span class="tag-badge">利用中</span> ${esc(d.current.machine)} / ${esc(fmtDuration(d.current.duration))}${over}`;
+            }
+
+            const usageRows = d.usages.length === 0
+                ? '<tr><td colspan="4" class="detail-muted" style="padding: 14px;">利用履歴はまだありません。</td></tr>'
+                : d.usages.map(u => `
+                    <tr>
+                        <td>${esc(u.machine)}</td>
+                        <td style="font-family: monospace;">${esc(u.start_time)}</td>
+                        <td>${esc(fmtDuration(u.duration))}</td>
+                        <td>${u.overtime ? '<span class="tag-over">超過</span>' : 'OK'}</td>
+                    </tr>`).join('');
+
+            const visitRows = d.visits.length === 0
+                ? '<tr><td style="padding: 14px;" class="detail-muted">入館履歴はまだありません。</td></tr>'
+                : d.visits.map(t => `<tr><td style="font-family: monospace;">${esc(t)}</td></tr>`).join('');
+
+            document.getElementById('detail-body').innerHTML = `
+                <div class="detail-info">
+                    <div><b>EMAIL</b>${esc(d.member.email)}</div>
+                    <div><b>FACE DATA</b>${d.member.has_face ? '登録済み' : '<span class="tag-over">未登録</span>'}</div>
+                    <div><b>NOW</b>${currentText}</div>
+                </div>
+
+                <div class="stat-grid">
+                    <div class="stat-card"><div class="label">Visits</div><div class="value">${esc(d.summary.visit_count)} 回</div></div>
+                    <div class="stat-card"><div class="label">Last visit</div><div class="value" style="font-size: 0.85rem;">${esc(d.summary.last_visit || '-')}</div></div>
+                    <div class="stat-card"><div class="label">Machine uses</div><div class="value">${esc(d.summary.usage_count)} 回</div></div>
+                    <div class="stat-card"><div class="label">Total time</div><div class="value">${esc(fmtDuration(d.summary.total_usage_seconds))}</div></div>
+                </div>
+
+                <div class="detail-section-title">Machine usage history (latest 50)</div>
+                <table class="cyber-table">
+                    <thead><tr><th>Machine</th><th>Start</th><th>Duration</th><th>Status</th></tr></thead>
+                    <tbody>${usageRows}</tbody>
+                </table>
+
+                <div class="detail-section-title">Entry history (latest 50)</div>
+                <table class="cyber-table">
+                    <thead><tr><th>Date / Time</th></tr></thead>
+                    <tbody>${visitRows}</tbody>
+                </table>
+
+                <p class="detail-muted" style="margin-top: 16px;">
+                    ※ 入館履歴は、QRと顔の認証に成功した記録だけです。警告つきの記録や退館は、個人を特定できないため含まれません。
+                </p>`;
         }
 
         async function deleteMember(memberId, memberName) {
