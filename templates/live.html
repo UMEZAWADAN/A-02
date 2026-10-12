@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>LIVE MONITOR - CHOCOZAP SECURITY</title>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --accent-lime-dark: #b5d432;
+            --danger-color: #ff2a5f;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding-top: 160px;
+            padding-bottom: 0;
+            padding-left: 20px;
+            padding-right: 20px;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* 共通ヘッダー */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+        
+        .header-brand h1 span {
+            background: var(--accent-lime);
+            padding: 0 10px;
+            color: #000;
+            -webkit-text-stroke: 0px transparent;
+            border-radius: 2px;
+            display: inline-block;
+        }
+
+        .header-brand h1 a {
+            color: inherit;
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+        .header-brand h1 a:hover {
+            color: var(--accent-lime);
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .nav-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+        .nav-btn:hover::after {
+            background-color: var(--accent-lime);
+        }
+
+        .nav-btn-logout {
+            border-color: rgba(255, 42, 95, 0.4);
+            color: var(--danger-color);
+        }
+        .nav-btn-logout:hover {
+            background: rgba(255, 42, 95, 0.1);
+            border-color: var(--danger-color);
+        }
+        .nav-btn-logout:hover::after {
+            background-color: var(--danger-color);
+        }
+
+        .system-status-bar {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            background: var(--surface-card);
+            max-width: 650px;
+            margin: 0 auto 30px auto;
+            padding: 10px 20px;
+            border-radius: 2px;
+            border: 1px solid var(--border-color);
+        }
+        .system-status-bar span {
+            color: #000;
+            font-weight: 900;
+            background: var(--accent-lime);
+            padding: 2px 8px;
+            border-radius: 50px;
+        }
+
+        .grid-container {
+            display: flex;
+            gap: 24px;
+            justify-content: center;
+            flex-wrap: wrap;
+            max-width: 1100px;
+            margin: 0 auto 24px auto;
+        }
+
+        .cyber-panel {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 24px;
+            width: 500px;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+            transition: all 0.3s ease;
+        }
+        .cyber-panel:hover {
+            border-color: #bbb;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.05);
+        }
+
+        .cyber-panel-full {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 24px;
+            max-width: 1024px;
+            margin: 0 auto 40px auto;
+            box-sizing: border-box;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+
+        .cyber-panel h2, .cyber-panel-full h2 {
+            margin-top: 0;
+            font-size: 0.9rem;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-main);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: monospace;
+        }
+
+        .video-box {
+            background: #000;
+            border-radius: 2px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            position: relative;
+            margin-bottom: 14px;
+        }
+        .video-box::before {
+            content: "LIVE_FEED // SECURE_CHANNEL";
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: var(--accent-lime);
+            color: #000;
+            font-size: 0.65rem;
+            font-family: monospace;
+            padding: 3px 10px;
+            border-radius: 50px;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            z-index: 2;
+        }
+        .video-box img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .cyber-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .cyber-table th, .cyber-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.9rem;
+            text-align: left;
+        }
+        .cyber-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-weight: 800;
+        }
+        .cyber-table td {
+            text-align: center;
+            color: var(--text-main);
+        }
+
+        .badge {
+            padding: 3px 10px;
+            border-radius: 50px;
+            font-size: 0.7rem;
+            font-weight: 800;
+            font-family: monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-block;
+        }
+        .badge-in { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
+        .badge-out { background: var(--surface-alt); color: var(--text-muted); border: 1px solid var(--border-color); }
+        .badge-alert { background: #ffe6eb; color: var(--danger-color); border: 1px solid #ffadb8; border-radius: 2px; }
+        .badge-normal { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); }
+        
+        .badge-machine-free { background: var(--surface-alt); color: var(--text-muted); border-radius: 50px; }
+        .badge-machine-using { background: #f0fcd4; color: #3b6b00; border: 1px solid var(--accent-lime); border-radius: 50px; }
+        .badge-machine-overtime { background: #ffe6eb; color: var(--danger-color); border: 1px solid #ffadb8; border-radius: 2px; }
+
+        .cyber-alert {
+            background: #ffe6eb;
+            border: 1px solid #ffadb8;
+            color: var(--danger-color);
+            text-align: center;
+            padding: 12px;
+            border-radius: 2px;
+            font-weight: 900;
+            font-size: 0.85rem;
+            margin-top: 16px;
+            display: none;
+            font-family: monospace;
+            letter-spacing: 0.08em;
+        }
+        .cyber-alert.active {
+            display: block;
+        }
+
+        .mode-section { display: none; }
+        .mode-section.active-mode { display: block; }
+
+        /* フッター */
+        .site-footer {
+            margin-top: 60px;
+            margin-left: -20px;
+            margin-right: -20px;
+            padding: 32px 20px 20px 20px;
+            border-top: 1px solid var(--text-main);
+            background: var(--bg-color);
+            box-sizing: border-box;
+        }
+
+        .footer-inner {
+            max-width: 1024px;
+            margin: 0 auto;
+        }
+
+        .footer-nav {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px 28px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .footer-nav a {
+            color: var(--text-main);
+            text-decoration: none;
+            padding: 4px 0;
+            border-bottom: 2px solid transparent;
+            transition: border-color 0.2s ease;
+        }
+        .footer-nav a:hover,
+        .footer-nav a.current {
+            border-bottom-color: var(--accent-lime);
+        }
+        .footer-nav a.logout {
+            color: var(--danger-color);
+        }
+        .footer-nav a.logout:hover {
+            border-bottom-color: var(--danger-color);
+        }
+
+        .footer-wordmark {
+            display: block;
+            max-width: 380px;
+            margin: 28px auto 12px auto;
+            text-decoration: none;
+        }
+        .footer-wordmark svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        .footer-wordmark text {
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            font-weight: 900;
+            fill: transparent;
+            stroke: var(--text-main);
+            stroke-width: 3;
+            transition: fill 0.3s ease;
+        }
+        .footer-wordmark:hover text {
+            fill: var(--accent-lime);
+        }
+
+        .footer-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .footer-bottom a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+        }
+        .footer-bottom a:hover {
+            color: var(--text-main);
+        }
+    </style>
+</head>
+<body>
+
+    <header class="site-header">
+        <div class="header-brand">
+            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP <span>SECURITY</span></a></h1>
+        </div>
+        <nav class="nav-container">
+            <a href="/" class="nav-btn">HOME</a>
+            <a href="/live" class="nav-btn" style="border-color: var(--text-main);">LIVE MONITOR</a>
+            <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+            <a href="/admin/members" class="nav-btn">MEMBERS</a>
+            <a href="/admin/logout" class="nav-btn nav-btn-logout">LOGOUT</a>
+        </nav>
+    </header>
+
+    <div class="system-status-bar">
+        ACTIVE_MODE: <span id="current-mode-text">ENTRANCE_GATE</span> &nbsp;|&nbsp; <span>[ENTER TO SWITCH]</span>
+    </div>
+
+    <div class="grid-container">
+        <div class="cyber-panel">
+            <h2>LIVE STREAM MONITOR</h2>
+            <div class="video-box">
+                <img id="video-stream" alt="Live Stream">
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); text-align: center; font-family: monospace;">
+                // TERMINAL: PRESS [ENTER] TO TOGGLE AI PIPELINE
+            </div>
+        </div>
+
+        <div class="cyber-panel">
+            <div id="section-entrance" class="mode-section active-mode">
+                <h2>ENTRANCE GATE (YOLO + QR)</h2>
+                <table class="cyber-table" style="margin-top: 10px;">
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">入館数 (IN)</td>
+                        <td id="in-count" style="color: #2d5000; font-weight: 900; font-size: 1.2rem; font-family: monospace;">0</td>
+                    </tr>
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">退館数 (OUT)</td>
+                        <td id="out-count" style="font-weight: 900; font-size: 1.2rem; font-family: monospace;">0</td>
+                    </tr>
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">直近のQRコード</td>
+                        <td id="last-qr" style="font-family: monospace; color: #2d5000; font-weight: 700;">None</td>
+                    </tr>
+                </table>
+                <div id="co-trailing-alert" class="cyber-alert">CRITICAL: CO-TRAILING DETECTED</div>
+            </div>
+
+            <div id="section-room" class="mode-section">
+                <h2>TRAINING ROOM (FACE RECOGNITION)</h2>
+                <table class="cyber-table" style="margin-top: 10px;">
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">追跡中ユーザー</td>
+                        <td id="user-name" style="font-weight: 700; font-family: monospace;">Guest</td>
+                    </tr>
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">滞在時間</td>
+                        <td id="accumulated-time" style="font-family: monospace;">0 秒</td>
+                    </tr>
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">ステータス</td>
+                        <td id="overtime-status" style="font-weight: 700; color: #2d5000; font-family: monospace;">NORMAL</td>
+                    </tr>
+                </table>
+
+                <h2 style="margin-top: 24px; font-size: 0.85rem;">MACHINE OCCUPANCY STATUS</h2>
+                <table class="cyber-table" style="margin-top: 8px;">
+                    <thead>
+                        <tr>
+                            <th>Machine</th>
+                            <th>User</th>
+                            <th>Duration</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="machine-table-body">
+                        <tr>
+                            <td colspan="4" style="color: var(--text-muted);">STANDBY...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="machine-alert-box" class="cyber-alert">WARNING: MACHINE OVERTIME</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="cyber-panel-full">
+        <h2>REAL-TIME ACCESS LOGS</h2>
+        <table class="cyber-table" style="margin-top: 10px;">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Direction</th>
+                    <th>Member ID</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="logs-table-body">
+                <tr>
+                    <td colspan="4" style="color: var(--text-muted); padding: 20px;">WAITING FOR DATA STREAM...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <footer class="site-footer">
+        <div class="footer-inner">
+            <nav class="footer-nav">
+                <a href="/">HOME</a>
+                <a href="/live" class="current" aria-current="page">LIVE MONITOR</a>
+                <a href="/admin/logs">ACCESS LOGS</a>
+                <a href="/admin/members">MEMBERS</a>
+                <a href="/admin/logout" class="logout">LOGOUT</a>
+            </nav>
+
+            <a class="footer-wordmark" href="/" aria-label="CHOCOZAP SECURITY">
+                <svg viewBox="0 0 1000 118" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
+                    <text x="0" y="112" font-size="130" textLength="1000" lengthAdjust="spacingAndGlyphs">CHOCOZAP SECURITY</text>
+                </svg>
+            </a>
+
+            <div class="footer-bottom">
+                <div>&copy; 2026 CHOCOZAP SECURITY</div>
+                <a href="#" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">BACK TO TOP &uarr;</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        function reloadVideoStream() {
+            const videoBox = document.querySelector('.video-box');
+            if (videoBox) {
+                videoBox.innerHTML = '';
+                const newImg = document.createElement('img');
+                newImg.id = 'video-stream';
+                newImg.alt = 'Live Stream';
+                newImg.src = "/video?t=" + new Date().getTime();
+                videoBox.appendChild(newImg);
+            }
+        }
+
+        window.addEventListener('pageshow', () => reloadVideoStream());
+        window.addEventListener('DOMContentLoaded', () => reloadVideoStream());
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            const modeText = document.getElementById('current-mode-text');
+            const secEntrance = document.getElementById('section-entrance');
+            const secRoom = document.getElementById('section-room');
+
+            if (data.active_mode === 'entrance') {
+                modeText.innerText = "ENTRANCE_GATE";
+                secEntrance.classList.add('active-mode');
+                secRoom.classList.remove('active-mode');
+            } else {
+                modeText.innerText = "TRAINING_ROOM";
+                secRoom.classList.add('active-mode');
+                secEntrance.classList.remove('active-mode');
+            }
+
+            document.getElementById('in-count').innerText = data.in_count;
+            document.getElementById('out-count').innerText = data.out_count;
+            document.getElementById('last-qr').innerText = data.last_qr;
+
+            const alertBox = document.getElementById('co-trailing-alert');
+            if (data.co_trailing_alert) {
+                alertBox.classList.add('active');
+            } else {
+                alertBox.classList.remove('active');
+            }
+
+            document.getElementById('user-name').innerText = data.user_name;
+            document.getElementById('accumulated-time').innerText = data.accumulated_time + ' 秒';
+
+            const statusTd = document.getElementById('overtime-status');
+            if (data.is_overtime) {
+                statusTd.innerText = "OVERTIME";
+                statusTd.style.color = "var(--danger-color)";
+            } else {
+                statusTd.innerText = "NORMAL";
+                statusTd.style.color = "#2d5000";
+            }
+
+            if (data.machines && data.machines.length > 0) {
+                const machineTbody = document.getElementById('machine-table-body');
+                machineTbody.innerHTML = '';
+                let hasMachineAlert = false;
+
+                data.machines.forEach(machine => {
+                    const tr = document.createElement('tr');
+                    let statusBadge = '<span class="badge badge-machine-free">FREE</span>';
+                    if (machine.status === 'using') {
+                        statusBadge = '<span class="badge badge-machine-using">USING</span>';
+                    } else if (machine.status === 'overtime') {
+                        statusBadge = '<span class="badge badge-machine-overtime">OVERTIME</span>';
+                        hasMachineAlert = true;
+                    }
+
+                    tr.innerHTML = `
+                        <td style="font-weight: 700;">${machine.name}</td>
+                        <td style="font-family: monospace;">${machine.user}</td>
+                        <td style="font-family: monospace;">${machine.duration}s</td>
+                        <td>${statusBadge}</td>
+                    `;
+                    machineTbody.appendChild(tr);
+                });
+
+                const machineAlertBox = document.getElementById('machine-alert-box');
+                if (hasMachineAlert) {
+                    machineAlertBox.classList.add('active');
+                } else {
+                    machineAlertBox.classList.remove('active');
+                }
+            }
+
+            if (data.logs && data.logs.length > 0) {
+                const tbody = document.getElementById('logs-table-body');
+                tbody.innerHTML = '';
+                data.logs.forEach(log => {
+                    const tr = document.createElement('tr');
+                    const dirBadge = log.direction === 'IN' 
+                        ? '<span class="badge badge-in">IN</span>' 
+                        : '<span class="badge badge-out">OUT</span>';
+                    const alertBadge = log.is_alert === 1 
+                        ? '<span class="badge badge-alert">ALERT</span>' 
+                        : '<span class="badge badge-normal">NORMAL</span>';
+
+                    tr.innerHTML = `
+                        <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${log.timestamp}</td>
+                        <td>${dirBadge}</td>
+                        <td style="font-family: monospace; font-weight: 700;">${log.member_id}</td>
+                        <td>${alertBadge}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+        };
+
+        ws.onclose = () => console.log("WebSocket disconnected.");
+    </script>
+</body>
+</html>
