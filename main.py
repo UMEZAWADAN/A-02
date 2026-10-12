@@ -44,7 +44,7 @@ DUPLICATE_QR_WINDOW = 5.0
 CO_TRAILING_WINDOW = 5.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 5.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
-FACE_MATCH_THRESHOLD = 0.55   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
+FACE_MATCH_THRESHOLD = 0.45   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
 
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
