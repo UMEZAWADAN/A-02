@@ -41,10 +41,10 @@ last_detected_qr = "" # 直近のQRコードを保持する変数
 # =========================================================================
 DB_PATH = "gym_security.db"
 DUPLICATE_QR_WINDOW = 5.0
-CO_TRAILING_WINDOW = 5.0
+CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
-FACE_TIMEOUT = 5.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
-FACE_MATCH_THRESHOLD = 0.45   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
+FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
+FACE_MATCH_THRESHOLD = 0.40   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
 
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
@@ -604,10 +604,11 @@ def camera_processing_loop():
                                 state.last_member_embedding is not None, best_sim
                             )
                             if ok:
-                                print(f"✅ 【入場OK】 {state.last_scanned_qr} / 顔の類似度 {best_sim:.2f}")
+                                member_name = state.last_scanned_qr.split(" (")[0] if " (" in state.last_scanned_qr else state.last_scanned_qr
+                                print(f"{member_name}：認証成功（類似度: {best_sim:.2f}）")
                                 state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
                             else:
-                                print(f"🚨 【入場警告】 {reason}")
+                                print(f"未登録または別人：認証失敗（理由: {reason}）")
                                 state.set_alert(True)
                                 state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
                         elif prev_x > LINE_X and x_center <= LINE_X:
