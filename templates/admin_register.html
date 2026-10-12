@@ -35,7 +35,7 @@
             box-sizing: border-box;
         }
 
-        /* 共通ヘッダー（index.htmlと完全統一） */
+        /* 共通ヘッダー */
         .site-header {
             position: fixed;
             top: 0;
@@ -87,6 +87,7 @@
             display: flex;
             gap: 12px;
             justify-content: center;
+            flex-wrap: wrap;
         }
         .nav-btn {
             background: rgba(236, 238, 242, 0.3);
@@ -221,7 +222,8 @@
             color: var(--text-main);
             border-bottom-color: var(--text-main);
         }
-        /* フッター：ナビ + アウトライン文字のロゴ + 著作権 */
+
+        /* フッター */
         .site-footer {
             margin-top: auto;
             margin-left: -20px;
@@ -258,12 +260,6 @@
         .footer-nav a:hover,
         .footer-nav a.current {
             border-bottom-color: var(--accent-lime);
-        }
-        .footer-nav a.logout {
-            color: var(--danger-color);
-        }
-        .footer-nav a.logout:hover {
-            border-bottom-color: var(--danger-color);
         }
 
         .footer-wordmark {
@@ -319,9 +315,10 @@
             <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP <span>SECURITY</span></a></h1>
         </div>
         <nav class="nav-container">
-            <a href="/" class="nav-btn">LIVE MONITOR</a>
+            <a href="/" class="nav-btn">HOME</a>
+            <a href="/live" class="nav-btn">LIVE MONITOR</a>
+            <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
             <a href="/admin/members" class="nav-btn">MEMBERS</a>
-            <a href="/admin/logs" class="nav-btn">LOGS</a>
             <a href="/admin/login" class="nav-btn">LOGIN</a>
         </nav>
     </header>
@@ -355,7 +352,8 @@
     <footer class="site-footer">
         <div class="footer-inner">
             <nav class="footer-nav">
-                <a href="/">LIVE MONITOR</a>
+                <a href="/">HOME</a>
+                <a href="/live">LIVE MONITOR</a>
                 <a href="/admin/logs">ACCESS LOGS</a>
                 <a href="/admin/members">MEMBERS</a>
                 <a href="/admin/login">LOGIN</a>

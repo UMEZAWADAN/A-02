@@ -19,7 +19,6 @@
             --danger-color: #ff2a5f;
         }
 
-        /* 1. ページ全体を縦方向のFlexboxにしてフッターを底に沈める */
         html, body {
             height: 100%;
             margin: 0;
@@ -29,18 +28,16 @@
             font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
             background-color: var(--bg-color);
             color: var(--text-main);
-            padding-top: 160px; /* 固定ヘッダー分の余白 */
+            padding-top: 160px;
             padding-left: 20px;
             padding-right: 20px;
             box-sizing: border-box;
             letter-spacing: -0.02em;
             -webkit-font-smoothing: antialiased;
-            
             display: flex;
             flex-direction: column;
         }
 
-        /* 2. メインコンテンツが少ない時でもフッターを押し下げるラッパー */
         .page-content {
             flex: 1;
         }
@@ -71,7 +68,6 @@
             letter-spacing: 0.08em;
             text-align: center;
             font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
-            
             color: transparent;
             -webkit-text-stroke: 1.5px var(--text-main);
         }
@@ -126,7 +122,6 @@
             background-color: var(--accent-lime);
         }
 
-        /* 🆕 ログアウトボタン用の特別スタイル */
         .nav-btn-logout {
             border-color: rgba(255, 42, 95, 0.4);
             color: var(--danger-color);
@@ -139,7 +134,6 @@
             background-color: var(--danger-color);
         }
 
-        /* 共通パネル・テーブル */
         .cyber-panel-full {
             background: var(--surface-card);
             border: 1px solid var(--border-color);
@@ -228,7 +222,6 @@
             border-color: var(--accent-lime-dark);
         }
 
-        /* 詳細モーダル */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -309,7 +302,6 @@
             font-size: 0.8rem;
         }
 
-        /* フッター：ナビ + アウトライン文字のロゴ + 著作権 */
         .site-footer {
             margin-top: auto;
             margin-left: -20px;
@@ -404,17 +396,17 @@
 
     <header class="site-header">
         <div class="header-brand">
-            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP SECURITY</a></h1>
+            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP <span>SECURITY</span></a></h1>
         </div>
         <nav class="nav-container">
-            <a href="/" class="nav-btn">LIVE MONITOR</a>
+            <a href="/" class="nav-btn">HOME</a>
+            <a href="/live" class="nav-btn">LIVE MONITOR</a>
             <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
-            <a href="/admin/members" class="nav-btn">MEMBERS</a>
+            <a href="/admin/members" class="nav-btn" style="border-color: var(--text-main);">MEMBERS</a>
             <a href="/admin/logout" class="nav-btn nav-btn-logout">LOGOUT</a>
         </nav>
     </header>
 
-    <!-- メインコンテンツを包むラッパー -->
     <div class="page-content">
         <div class="cyber-panel-full" style="margin-top: 20px;">
             <h2>REGISTERED MEMBERS MANAGEMENT</h2>
@@ -437,7 +429,6 @@
         </div>
     </div>
 
-    <!-- 会員詳細モーダル -->
     <div class="modal-overlay" id="detail-overlay">
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
             <div class="modal-head">
@@ -454,7 +445,8 @@
     <footer class="site-footer">
         <div class="footer-inner">
             <nav class="footer-nav">
-                <a href="/">LIVE MONITOR</a>
+                <a href="/">HOME</a>
+                <a href="/live">LIVE MONITOR</a>
                 <a href="/admin/logs">ACCESS LOGS</a>
                 <a href="/admin/members" class="current" aria-current="page">MEMBERS</a>
                 <a href="/admin/logout" class="logout">LOGOUT</a>
@@ -474,7 +466,6 @@
     </footer>
 
     <script>
-        // 画面に出す文字列は必ずエスケープする（登録時の名前などに含まれるHTMLを実行させない）
         function esc(s) {
             return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
@@ -531,7 +522,6 @@
             }
         }
 
-        // ---- 会員の詳細（履歴）モーダル ----
         const overlay = document.getElementById('detail-overlay');
 
         function closeDetail() { overlay.classList.remove('open'); }
@@ -613,11 +603,7 @@
                 <table class="cyber-table">
                     <thead><tr><th>Date / Time</th></tr></thead>
                     <tbody>${visitRows}</tbody>
-                </table>
-
-                <p class="detail-muted" style="margin-top: 16px;">
-                    ※ 入館履歴は、QRと顔の認証に成功した記録だけです。警告つきの記録や退館は、個人を特定できないため含まれません。
-                </p>`;
+                </table>`;
         }
 
         async function deleteMember(memberId, memberName) {

@@ -386,11 +386,12 @@
 
     <header class="site-header">
         <div class="header-brand">
-            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP SECURITY</a></h1>
+            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP <span>SECURITY</span></a></h1>
         </div>
         <nav class="nav-container">
-            <a href="/" class="nav-btn">LIVE MONITOR</a>
-            <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+            <a href="/" class="nav-btn">HOME</a>
+            <a href="/live" class="nav-btn">LIVE MONITOR</a>
+            <a href="/admin/logs" class="nav-btn" style="border-color: var(--text-main);">ACCESS LOGS</a>
             <a href="/admin/members" class="nav-btn">MEMBERS</a>
             <a href="/admin/logout" class="nav-btn nav-btn-logout">LOGOUT</a>
         </nav>
@@ -440,7 +441,8 @@
     <footer class="site-footer">
         <div class="footer-inner">
             <nav class="footer-nav">
-                <a href="/">LIVE MONITOR</a>
+                <a href="/">HOME</a>
+                <a href="/live">LIVE MONITOR</a>
                 <a href="/admin/logs" class="current" aria-current="page">ACCESS LOGS</a>
                 <a href="/admin/members">MEMBERS</a>
                 <a href="/admin/logout" class="logout">LOGOUT</a>
@@ -464,7 +466,6 @@
         let currentFilter = 'all';
         let lastSignature = '';
 
-        // 画面に出す文字列は必ずエスケープする
         function esc(s) {
             return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
@@ -541,7 +542,7 @@
                 document.getElementById('updated-at').textContent =
                     'UPDATED ' + new Date().toLocaleTimeString('ja-JP');
                 const signature = JSON.stringify(data.logs);
-                if (signature === lastSignature) return;   // 変化がなければ描画しない
+                if (signature === lastSignature) return;
                 lastSignature = signature;
                 allLogs = data.logs;
                 renderLogs();
@@ -550,7 +551,6 @@
             }
         }
 
-        // ---- フィルタ ----
         document.querySelectorAll('.filter-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 currentFilter = btn.dataset.filter;
@@ -559,7 +559,6 @@
             });
         });
 
-        // ---- 詳細モーダル ----
         const overlay = document.getElementById('detail-overlay');
         function closeDetail() { overlay.classList.remove('open'); }
         document.getElementById('detail-close').addEventListener('click', closeDetail);
@@ -620,7 +619,7 @@
         }
 
         fetchLogs();
-        setInterval(fetchLogs, 5000);   // 5秒ごとに自動更新
+        setInterval(fetchLogs, 5000);
     </script>
 </body>
 </html>
