@@ -44,7 +44,8 @@ DUPLICATE_QR_WINDOW = 5.0
 CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
-FACE_MATCH_THRESHOLD = 0.40   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
+FACE_MATCH_THRESHOLD = 0.40   # 顔が一致したとみなすコサイン類似度（入口の1:1判定。ログを見て調整）
+ROOM_FACE_THRESHOLD = 0.40    # ルームモードの1:N判定用。部屋のカメラは遠い・斜めで類似度が低めになりやすいので、画面の best= を見て下げる
 
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
@@ -341,7 +342,7 @@ class SystemStateManager:
                     m_state.update({"user": "-", "duration": 0.0, "status": "free",
                                     "start_time": None, "last_seen": None, "member_id": None})
 
-    def push_update(self):
+    def build_payload(self):
         machines_payload = []
         for key, info in MACHINE_LIMITS.items():
             st = self.machine_states[key]
@@ -362,19 +363,30 @@ class SystemStateManager:
         with mode_lock:
             current_active_mode = active_mode
 
-        data = {
+        # 「追跡中ユーザー／滞在時間／ステータス」は、利用中のマシンの状態から求める
+        in_use = [m for m in machines_payload if m["status"] in ("using", "overtime")]
+        if not in_use:
+            room_user, room_time, room_overtime = "Guest", 0, False
+        else:
+            room_user = in_use[0]["user"] if len(in_use) == 1 else "Multiple"
+            room_time = max(m["duration"] for m in in_use)
+            room_overtime = any(m["status"] == "overtime" for m in in_use)
+
+        return {
             "active_mode": current_active_mode,
             "in_count": self.in_count,
             "out_count": self.out_count,
             "last_qr": self.last_scanned_qr,
             "co_trailing_alert": self.co_trailing_alert,
-            "user_name": "Multiple" if len(self.active_users) > 0 else "Guest",
-            "accumulated_time": 0,
-            "is_overtime": False,
+            "user_name": room_user,
+            "accumulated_time": room_time,
+            "is_overtime": room_overtime,
             "machines": machines_payload,
             "logs": logs_payload
         }
-        self.update_queue.put(data)
+
+    def push_update(self):
+        self.update_queue.put(self.build_payload())
 
 state = SystemStateManager()
 
@@ -492,12 +504,17 @@ class SitConfirmer:
     def __init__(self):
         self.since = None
         self.last_seen = 0.0
+        self.had_gap = False   # 前回「座っている」と判定したあと、「座っていない」判定のフレームが挟まったか
 
     def update(self, sitting_now, now):
         if not sitting_now:
+            self.had_gap = True
             return False, self.since
-        if self.since is None or (now - self.last_seen) > SIT_BREAK_TOLERANCE:
+        # 途切れとみなすのは、「座っていない」フレームが挟まり、かつ SIT_BREAK_TOLERANCE を超えて空いたときだけ。
+        # （座っている判定が連続しているのに、1フレームの処理が遅いだけでタイマーが巻き戻らないようにする）
+        if self.since is None or (self.had_gap and (now - self.last_seen) > SIT_BREAK_TOLERANCE):
             self.since = now
+        self.had_gap = False
         self.last_seen = now
         return (now - self.since) >= SIT_CONFIRM_SECONDS, self.since
 
@@ -621,6 +638,10 @@ def camera_processing_loop():
     face_sim_history = {}
     last_push_time = 0.0
     last_err_log = 0.0
+    prev_frame_time = None   # 1フレームの処理時間の計測用（遅いとタイマー系の判定に影響するため画面に出す）
+    loop_dt = 0.0
+    last_slow_log = 0.0
+    last_face_log = 0.0
     sit_confirmer = SitConfirmer()
     seat_memory = []
     identity_holder = IdentityHolder()
@@ -632,6 +653,9 @@ def camera_processing_loop():
     while cap.isOpened():
         try:
             current_time = time.time()
+            if prev_frame_time is not None:
+                loop_dt = 0.8 * loop_dt + 0.2 * (current_time - prev_frame_time)
+            prev_frame_time = current_time
             success, frame = cap.read()
             if not success:
                 time.sleep(0.03)
@@ -729,6 +753,8 @@ def camera_processing_loop():
                 detected_user_name = "Guest"
                 detected_member_id = None
                 matched_face_center = None
+                best_face_sim = None   # 今のフレームで見えた顔のうち、会員との最高類似度（診断表示用）
+                face_note = "no-face" if len(faces) == 0 else ("no-members" if member_matrix is None else "no-match")
 
                 # 1. 顔による1:Nマッチング（キャッシュ済みの正規化行列との内積で一括計算）
                 for face in faces:
@@ -740,7 +766,11 @@ def camera_processing_loop():
                         continue
                     sims = member_matrix @ (fe / fn)
                     best_idx = int(np.argmax(sims))
-                    if float(sims[best_idx]) > FACE_MATCH_THRESHOLD:
+                    sim_val = float(sims[best_idx])
+                    if best_face_sim is None or sim_val > best_face_sim:
+                        best_face_sim = sim_val
+                    if sim_val > ROOM_FACE_THRESHOLD:
+                        face_note = "matched"
                         detected_user_name = member_names[best_idx]
                         detected_member_id = member_ids[best_idx]   # 【バグ修正】一致した会員のIDを使う
                         matched_face_center = ((face.bbox[0] + face.bbox[2]) / 2, (face.bbox[1] + face.bbox[3]) / 2)
@@ -784,6 +814,7 @@ def camera_processing_loop():
                               and (sit_box[1] - seat_h) <= matched_face_center[1] <= sit_box[3])
                     if sit_box is not None and not inside:
                         detected_user_name, detected_member_id = "Guest", None
+                        face_note = "matched-but-outside-seat"
 
                 # 服装による補助判定：顔で一度も特定できていない（保持中の本人もいない）座っている人にだけ使う。
                 # 一度決まれば IdentityHolder が保持するので、毎フレーム選び直さない。
@@ -824,6 +855,28 @@ def camera_processing_loop():
                     estimated=estimated_by_clothes)
                 held_mark = " (estimated)" if identity_estimated else (" (face lost)" if identity_held else "")
 
+                # --- 診断表示: 顔判定のどこで止まっているか／誰として扱っているか／1フレームの処理時間 ---
+                if detected_user_name == "Guest":
+                    id_source = "none"
+                elif identity_estimated:
+                    id_source = "clothes"
+                elif identity_held:
+                    id_source = "held"
+                else:
+                    id_source = "face"
+                sim_txt = f"{best_face_sim:.2f}" if best_face_sim is not None else "-"
+                cv2.putText(frame, f"face={face_note} faces={len(faces)} best={sim_txt}/{ROOM_FACE_THRESHOLD:.2f} "
+                                   f"id={id_source} loop={loop_dt:.2f}s",
+                            (20, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                if is_sitting and current_time - last_face_log >= 3.0:
+                    print(f"👤 顔判定: {face_note} / 顔の数={len(faces)} / 最高類似度={sim_txt}（閾値 {ROOM_FACE_THRESHOLD:.2f}）"
+                          f" / 識別元={id_source} / 1フレーム={loop_dt:.2f}秒")
+                    last_face_log = current_time
+                if loop_dt > SIT_BREAK_TOLERANCE and current_time - last_slow_log >= 10.0:
+                    print(f"⚠️ 1フレームの処理に約{loop_dt:.1f}秒かかっています（顔認識＋椅子検出＋骨格推定をCPUで実行中）。"
+                          f"座り判定の反応が遅れる原因になります。")
+                    last_slow_log = current_time
+
                 # 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
                 sitting_now = detected_user_name != "Guest" and is_sitting
                 confirmed, sit_since = sit_confirmer.update(sitting_now, current_time)
@@ -832,7 +885,8 @@ def camera_processing_loop():
                                                    started_at=sit_since, member_id=detected_member_id)
                     cv2.putText(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 elif sitting_now:
-                    cv2.putText(frame, f"Sitting? confirming {current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
+                    cv2.putText(frame, f"Sitting? confirming [{detected_member_id or '-'}]{held_mark} "
+                                       f"{current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
                                 (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 else:
                     status_text = f"User: {detected_user_name}{held_mark} | Sitting: {is_sitting}"
@@ -981,21 +1035,30 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_websockets.append(websocket)
     try:
+        # 接続直後に最新の状態を配信キューへ入れる（次のイベントを待たずに画面が埋まる）。
+        # 通常の更新と同じキューを通すので、古いデータが後から届いて上書きすることもない。
+        await asyncio.to_thread(state.push_update)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
         if websocket in connected_websockets:
             connected_websockets.remove(websocket)
 
 async def ws_broadcast_loop():
     while True:
-        while not state.update_queue.empty():
-            data = state.update_queue.get()
-            for ws in connected_websockets:
-                try:
-                    await ws.send_text(json.dumps(data))
-                except Exception:
-                    pass
+        try:
+            while not state.update_queue.empty():
+                text = json.dumps(state.update_queue.get())
+                for ws in list(connected_websockets):
+                    try:
+                        await ws.send_text(text)
+                    except Exception:
+                        if ws in connected_websockets:
+                            connected_websockets.remove(ws)
+        except Exception as e:
+            print(f"⚠️ WebSocket配信でエラー（配信は継続します）: {e}")
         await asyncio.sleep(0.1)
 
 @app.on_event("startup")
