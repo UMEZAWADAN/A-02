@@ -67,11 +67,13 @@ SIT_CONFIRM_SECONDS = 2.0     # 「座っている」がこの秒数続いて初
 SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れなら、座り続けているとみなす
 POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
 KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
-SIT_THIGH_DROP_RATIO = 0.75   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0、座ると0〜0.5。これ以上なら立っているとみなす
+SIT_THIGH_DROP_RATIO = 0.60   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0（遠近で縮んでも0.7前後）、座ると0〜0.5。これ以上なら立っているとみなす（従来は0.75）
 IDENTITY_HOLD_SECONDS = 15.0  # 顔認識が外れても、直前に特定した会員をこの秒数は保持（座っている間は保持し続ける）
 SEAT_MEMORY_SECONDS = 10.0    # 椅子が検出できなくなっても、この秒数は直前の位置を覚えておく（座った人に隠れる対策）
 SEAT_OCCLUDED_RATIO = 0.15    # 人が椅子ボックスの面積のこれ以上に重なっていたら「隠れている」とみなし、椅子の記憶を保持
 HIP_SEAT_MARGIN = 0.10        # 腰が椅子ボックスの上端よりこの割合だけ上でも許容
+HIP_SEAT_MIN_DEPTH_NOKNEE = 0.20   # 膝が見えないとき、腰は椅子ボックスの上端からこの割合より下にあること（座ると腰は椅子の中ほど、立つと上端付近）。-0.10 で従来どおり
+SHOULDER_ABOVE_SEAT_MAX = 0.40     # 腰が見えない（上半身のみ）とき、肩が椅子ボックスの上端より（椅子の高さ×この割合）以上高ければ立っているとみなす。座ると約0.15、立つと約0.55
 STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
 RECENT_ENTRY_TTL = 900.0      # 入口で記録した服装情報を、服装による補助判定の候補に残す秒数（15分）
@@ -583,9 +585,10 @@ def _visible_mean(kxy, kconf, idxs):
         return None
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
-def _hip_on_seat(hip, seat):
+def _hip_on_seat(hip, seat, margin=None):
     sx1, sy1, sx2, sy2 = seat
-    top = sy1 - HIP_SEAT_MARGIN * (sy2 - sy1)
+    margin = HIP_SEAT_MARGIN if margin is None else margin
+    top = sy1 - margin * (sy2 - sy1)
     return sx1 <= hip[0] <= sx2 and top <= hip[1] <= sy2
 
 def evaluate_sitting(box, kxy, kconf, seat_boxes):
@@ -594,22 +597,32 @@ def evaluate_sitting(box, kxy, kconf, seat_boxes):
         return False, overlap, "overlap"
 
     hip = _visible_mean(kxy, kconf, (11, 12))
+    shoulder = _visible_mean(kxy, kconf, (5, 6))
     if hip is not None:
         if not any(_hip_on_seat(hip, s) for s in seat_boxes):
             return False, overlap, "hip-outside"
         knee = _visible_mean(kxy, kconf, (13, 14))
         if knee is not None:
-            shoulder = _visible_mean(kxy, kconf, (5, 6))
             torso = (hip[1] - shoulder[1]) if shoulder is not None else (box[3] - box[1]) * 0.3
             torso = max(torso, 1.0)
-            if (knee[1] - hip[1]) / torso >= SIT_THIGH_DROP_RATIO:
-                return False, overlap, "standing-legs"
-        return True, overlap, "pose"
+            drop = (knee[1] - hip[1]) / torso
+            if drop >= SIT_THIGH_DROP_RATIO:
+                return False, overlap, f"standing-legs(drop={drop:.2f})"
+            return True, overlap, f"pose(drop={drop:.2f})"
+        # 膝が見えない（近くに立って足が画面外、など）：脚で確かめられないので、腰の高さで確かめる。
+        # 座っていれば腰は椅子の中ほど、立っていれば椅子ボックスの上端付近になる。
+        if not any(_hip_on_seat(hip, s, margin=-HIP_SEAT_MIN_DEPTH_NOKNEE) for s in seat_boxes):
+            return False, overlap, "hip-shallow(no-knee)"
+        return True, overlap, "pose(no-knee)"
 
+    # 腰が見えない（上半身のみ）：肩が椅子に対して高すぎれば立っているとみなす
+    if shoulder is not None and not any(
+            shoulder[1] >= s[1] - SHOULDER_ABOVE_SEAT_MAX * (s[3] - s[1]) for s in seat_boxes):
+        return False, overlap, "standing-high(no-hip)"
     h, w = box[3] - box[1], max(box[2] - box[0], 1.0)
     if h / w >= STANDING_ASPECT_RATIO:
         return False, overlap, "standing-aspect"
-    return True, overlap, "box"
+    return True, overlap, f"box(h/w={h / w:.1f})"
 
 # =========================================================================
 # 🎥 カメラ処理ループ
@@ -843,7 +856,7 @@ def camera_processing_loop():
                                    f"overlap={max(overlap, 0.0):.2f} why={why}",
                             (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-                log_key = (is_sitting, why)
+                log_key = (is_sitting, why.split("(")[0])
                 if log_key != sit_log["key"] and current_time - sit_log["time"] >= 1.0:
                     print(f"🪑 座り判定: {is_sitting} (why={why}, overlap={max(overlap, 0.0):.2f}, "
                           f"persons={len(persons)}, seats={n_live}+{len(seat_memory) - n_live}記憶)")
