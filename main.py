@@ -964,7 +964,7 @@ def api_register(data: RegisterRequest):
 
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-        face_app.prepare(ctx_id=0, det_size=(640, 640))
+        face_app.prepare(ctx_id=0, det_size=(1280, 1280))
         faces = face_app.get(frame)
 
         if len(faces) == 0:
