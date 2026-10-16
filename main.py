@@ -638,7 +638,7 @@ def camera_processing_loop():
     
     print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-    face_app.prepare(ctx_id=0, det_size=(1280, 1280))
+    face_app.prepare(ctx_id=0, det_size=(640, 640)) # 👈 640x640に統一
 
     cap = cv2.VideoCapture(CAMERA_ID)
     while not cap.isOpened():
@@ -964,7 +964,7 @@ def api_register(data: RegisterRequest):
 
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-        face_app.prepare(ctx_id=0, det_size=(1280, 1280))
+        face_app.prepare(ctx_id=0, det_size=(640, 640)) # 👈 640x640に統一
         faces = face_app.get(frame)
 
         if len(faces) == 0:
