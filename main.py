@@ -41,6 +41,7 @@ last_detected_qr = "" # 直近のQRコードを保持する変数
 # =========================================================================
 DB_PATH = "gym_security.db"
 DUPLICATE_QR_WINDOW = 5.0
+STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（1280x720だと既定の95は重いので下げる）
 CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
@@ -53,7 +54,13 @@ SMTP_PORT = 587
 SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
 SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
 
-LINE_X = 320
+# 🎞️ 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
+FRAME_W, FRAME_H = 1280, 720
+LINE_X = FRAME_W // 2          # 入口の通過判定ライン（画面中央）
+YOLO_IMGSZ = 1280              # YOLOの推論サイズ。処理が重いときはここを下げる（例: 960 / 640）
+FACE_DET_SIZE = (1280, 736)    # 顔検出の入力サイズ（幅, 高さ）。16:9用で32の倍数
+UI = FRAME_W / 640.0           # 画面上の文字・線の拡大率（HUDの見た目を従来と同じ比率に保つ）
+THICK = max(1, int(round(2 * UI * 0.75)))   # ボックス・ラインの太さ
 CAMERA_ID = 0  # 内蔵カメラ1台
 
 # 🪑 椅子・座り判定の設定
@@ -76,7 +83,27 @@ HIP_SEAT_MIN_DEPTH_NOKNEE = 0.20   # 膝が見えないとき、腰は椅子ボ�
 SHOULDER_ABOVE_SEAT_MAX = 0.40     # 腰が見えない（上半身のみ）とき、肩が椅子ボックスの上端より（椅子の高さ×この割合）以上高ければ立っているとみなす。座ると約0.15、立つと約0.55
 STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
+# 🚪 入口：「顔認証」と「線の通過」を分けて判定する設定
+ENTRANCE_CROSS_MARGIN_PX = 40        # 認証済みの本人が、線からこの距離だけ向こう側（右）で見つかったら通過（入館）とする
+ENTRANCE_REASSOC_SECONDS = 3.0       # 本人を見失っても、この秒数以内なら直前の位置に近い枠を本人として探し直す
+ENTRANCE_REASSOC_BASE_PX = 150       # 探し直しで許容する移動距離（基本）
+ENTRANCE_REASSOC_PX_PER_SEC = 250    # 探し直しで許容する移動距離（見失った秒数あたりの追加）
+ENTRANCE_OTHER_FACE_SIM = 0.15       # 会員との類似度がこれ未満の顔を含む枠は、別人として探し直しの候補から外す
+ENTRANCE_BANNER_SECONDS = 4.0        # 認証NG・失効のメッセージを画面に出す秒数
+
 RECENT_ENTRY_TTL = 900.0      # 入口で記録した服装情報を、服装による補助判定の候補に残す秒数（15分）
+
+def put_text(img, text, org, font, fs, color, th=2, hud=True):
+    """cv2.putText と同じ引数。hud=True なら位置・文字サイズ・太さを解像度に合わせて拡大する。
+    人ボックスに付けるラベルなど、実座標を渡す場合は hud=False にする。"""
+    x, y = (int(org[0] * UI), int(org[1] * UI)) if hud else (int(org[0]), int(org[1]))
+    cv2.putText(img, text, (x, y), font, fs * UI, color, max(1, int(round(th * UI))))
+
+def open_camera():
+    cap = cv2.VideoCapture(CAMERA_ID)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+    return cap
 
 # 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
 active_mode = "entrance"
@@ -625,6 +652,120 @@ def evaluate_sitting(box, kxy, kconf, seat_boxes):
     return True, overlap, f"box(h/w={h / w:.1f})"
 
 # =========================================================================
+# 🚪 入口の認証セッション（QR → 顔の一致 → 線の通過 を1人分まとめて管理）
+# =========================================================================
+class EntranceSession:
+    """QRを読んだ会員1人分の状態を管理する（入口モード用）。
+
+    ・会員の顔と一致した時点で「顔認証OK」にする（線をまたぐ瞬間を待たない）。
+    ・認証後は、顔 → 追跡ID → 直前の位置に近い枠 の順で本人を探し直す。
+      そのため、処理が遅れて枠のIDが付け替わっても本人を見失いにくい。
+    ・線の手前（左）にいた本人が、線から一定距離だけ向こう側（右）で見つかった時点で通過（入館）とする。
+      線をまたいだ瞬間のフレームは必要ない。"""
+
+    def __init__(self, member_id, label, embedding):
+        self.member_id = member_id
+        self.label = label
+        self.embedding = embedding
+        self.authed = False
+        self.auth_time = None
+        self.match_sim = 0.0         # 会員と一致した顔の最大類似度
+        self.best_sim_seen = None    # QR読み取り後に見えた全ての顔の最大類似度（不一致の診断用）
+        self.track_id = None
+        self.pos = None              # 本人を最後に確認した位置 (x, y)
+        self.last_box = None
+        self.last_seen = None
+        self.armed = False           # 線の手前（左）にいたことを確認済みか
+        self.done = False
+        self.last_face_sims = []     # [(face, 会員との類似度)] 描画用
+
+    @staticmethod
+    def _center(box):
+        return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+    def _has_other_face(self, box):
+        """この枠の中に、会員とは明らかに別人の顔があるか。"""
+        for face, sim in self.last_face_sims:
+            fx, fy = self._center(face.bbox)
+            if box[0] <= fx <= box[2] and box[1] <= fy <= box[3] and sim < ENTRANCE_OTHER_FACE_SIM:
+                return True
+        return False
+
+    def update(self, now, qr_time, tracked, faces):
+        """1フレーム分の更新。tracked は [(track_id, box), ...]。
+        戻り値: None / "authed"（顔認証OK）/ "crossed"（通過=入館）/ "expired"（時間切れ）"""
+        if self.done:
+            return None
+        if now - qr_time > CO_TRAILING_WINDOW:
+            self.done = True
+            return "expired"
+
+        # 1) 会員の顔と似ている顔を探す
+        self.last_face_sims = []
+        face_hit = None
+        for face in faces:
+            sim = cosine_sim(self.embedding, face.embedding)
+            self.last_face_sims.append((face, sim))
+            if self.best_sim_seen is None or sim > self.best_sim_seen:
+                self.best_sim_seen = sim
+            if sim > FACE_MATCH_THRESHOLD and (face_hit is None or sim > face_hit[2]):
+                fc = self._center(face.bbox)
+                face_hit = (fc[0], fc[1], sim)
+
+        # 2) 本人の位置を決める
+        pos = box = tid = None
+        if face_hit is not None:
+            fx, fy, sim = face_hit
+            self.match_sim = max(self.match_sim, sim)
+            for t, b in tracked:
+                if b[0] <= fx <= b[2] and b[1] <= fy <= b[3]:
+                    box, tid = b, t
+                    break
+            pos = self._center(box) if box is not None else (fx, fy)   # 枠が無くても顔の位置を使う
+        elif self.authed:
+            # 顔が見えないとき：同じ追跡IDの枠 → なければ直前の位置に近い枠
+            for t, b in tracked:
+                if t == self.track_id:
+                    box, tid = b, t
+                    break
+            if box is None and self.pos is not None and now - self.last_seen <= ENTRANCE_REASSOC_SECONDS:
+                allowed = ENTRANCE_REASSOC_BASE_PX + ENTRANCE_REASSOC_PX_PER_SEC * (now - self.last_seen)
+                best_d = None
+                for t, b in tracked:
+                    c = self._center(b)
+                    d = float(np.hypot(c[0] - self.pos[0], c[1] - self.pos[1]))
+                    if d > allowed or (best_d is not None and d >= best_d) or self._has_other_face(b):
+                        continue
+                    box, tid, best_d = b, t, d
+            if box is not None:
+                pos = self._center(box)
+
+        if pos is not None:
+            self.pos, self.last_seen = pos, now
+            if box is not None:
+                self.last_box = box
+            if tid is not None:
+                self.track_id = tid
+
+        # 3) 顔認証
+        event = None
+        if not self.authed:
+            if face_hit is None:
+                return None
+            self.authed = True
+            self.auth_time = now
+            event = "authed"
+
+        # 4) 通過の判定（線の手前にいた本人が、向こう側で見つかったら通過）
+        if pos is not None:
+            if pos[0] < LINE_X:
+                self.armed = True
+            elif self.armed and pos[0] >= LINE_X + ENTRANCE_CROSS_MARGIN_PX:
+                self.done = True
+                return "crossed"
+        return event
+
+# =========================================================================
 # 🎥 カメラ処理ループ
 # =========================================================================
 def camera_processing_loop():
@@ -638,14 +779,16 @@ def camera_processing_loop():
     
     print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-    face_app.prepare(ctx_id=0, det_size=(640, 640)) # 👈 640x640に統一
+    face_app.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
 
-    cap = cv2.VideoCapture(CAMERA_ID)
+    cap = open_camera()
     while not cap.isOpened():
         print("❌ エラー: カメラを開けませんでした。3秒後に再試行します...")
         time.sleep(3)
         cap.release()
-        cap = cv2.VideoCapture(CAMERA_ID)
+        cap = open_camera()
+    print(f">> カメラ解像度: {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f}"
+          f"（目標 {FRAME_W}x{FRAME_H} / YOLO imgsz={YOLO_IMGSZ} / 顔検出 {FACE_DET_SIZE[0]}x{FACE_DET_SIZE[1]}）")
 
     track_history = {}
     face_sim_history = {}
@@ -659,6 +802,8 @@ def camera_processing_loop():
     seat_memory = []
     identity_holder = IdentityHolder()
     sit_log = {"key": None, "time": 0.0}
+    entrance_session = None   # 入口：QRを読んだ会員1人分の認証セッション
+    auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}   # 認証NG・失効・入館OKの一時表示
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
@@ -674,28 +819,93 @@ def camera_processing_loop():
                 time.sleep(0.03)
                 continue
 
-            frame = cv2.resize(frame, (640, 480))
+            if frame.shape[1] != FRAME_W or frame.shape[0] != FRAME_H:
+                frame = cv2.resize(frame, (FRAME_W, FRAME_H))   # カメラが指定解像度に非対応のときの保険
             with mode_lock:
                 mode = active_mode
+            if mode != "entrance":
+                entrance_session = None
 
             if mode == "entrance":
                 qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
                 if qr_bbox is not None and len(qr_bbox) > 0:
                     pts = qr_bbox[0].astype(int)
                     for i in range(4):
-                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), 2)
+                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), THICK)
                     if qr_data:
                         if state.should_process_qr(qr_data, current_time):
                             state.process_qr(qr_data, current_time)
+                            if (state.accepted_token == qr_data and state.last_member_id is not None
+                                    and state.last_member_embedding is not None):
+                                # 有効なQR：この会員の顔認証セッションを開始（顔データ未登録の会員は従来どおり通過時に失敗扱い）
+                                entrance_session = EntranceSession(state.last_member_id, state.last_scanned_qr,
+                                                                   state.last_member_embedding)
+                                auth_banner["until"] = 0.0
+                            elif state.last_scanned_qr == "Invalid QR":
+                                entrance_session = None
 
                 faces = face_app.get(frame)
 
-                yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
-                cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
-                cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                yolo_results = yolo_model.track(frame, persist=True, classes=[0], imgsz=YOLO_IMGSZ, verbose=False)
+                cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_H), (255, 0, 0), THICK)
+                put_text(frame, "GATE LINE", (LINE_X + 10, int(30 * UI)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, hud=False)
 
                 for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                     del face_sim_history[tid]
+
+                tracked = []   # [(track_id, box), ...]
+                if yolo_results[0].boxes.id is not None:
+                    tracked = list(zip(yolo_results[0].boxes.id.cpu().numpy().astype(int),
+                                       yolo_results[0].boxes.xyxy.cpu().numpy()))
+
+                # --- 顔認証セッションの更新（顔が会員と一致した時点で認証OK。線を越えた本人を探し直して通過を判定） ---
+                skip_tid = None      # このIDの通過は下の従来判定ではなく、ここで扱う
+                face_sims = []
+                if entrance_session is not None:
+                    sess = entrance_session
+                    ev = sess.update(current_time, state.last_qr_time, tracked, faces)
+                    skip_tid = sess.track_id
+                    face_sims = sess.last_face_sims
+                    member_name = sess.label.split(" (")[0] if " (" in sess.label else sess.label
+                    if ev == "authed":
+                        print(f"✅ 【顔認証OK】 {sess.label}（類似度 {sess.match_sim:.2f}）… このまま線を越えると入館になります")
+                    elif ev == "crossed":
+                        print(f"{member_name}：認証成功（類似度: {sess.match_sim:.2f}）… 顔認証後に線の向こう側で確認")
+                        state.register_pass("IN", sess.label, 0,
+                                            note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
+                        if sess.last_box is not None:
+                            state.add_recent_entry(sess.member_id, member_name,
+                                                   get_box_color_feature(frame, sess.last_box), current_time)
+                        auth_banner.update(text=f"IN OK: {sess.member_id}", color=(0, 255, 0),
+                                           until=current_time + ENTRANCE_BANNER_SECONDS)
+                    elif ev == "expired":
+                        if sess.authed:
+                            print(f"⌛ 【認証失効】 {sess.label}：顔認証後、{CO_TRAILING_WINDOW:.0f}秒以内に線を越えなかったため失効しました")
+                            auth_banner.update(text=f"AUTH EXPIRED: {sess.member_id}", color=(0, 165, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                        elif sess.best_sim_seen is not None:
+                            print(f"❌ 【顔認証NG】 {sess.label}：QRと顔が一致しませんでした（最大類似度 {sess.best_sim_seen:.2f} ≤ しきい値 {FACE_MATCH_THRESHOLD}）")
+                            state.set_alert(True)
+                            auth_banner.update(text=f"AUTH NG (face mismatch): {sess.member_id}", color=(0, 0, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                        else:
+                            print(f"⌛ 【顔認証タイムアウト】 {sess.label}：{CO_TRAILING_WINDOW:.0f}秒以内に顔が見つかりませんでした")
+                            auth_banner.update(text=f"AUTH TIMEOUT (no face): {sess.member_id}", color=(0, 165, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                    if sess.done:
+                        entrance_session = None
+
+                # 顔の枠（会員と一致した顔=黄、それ以外=灰）。認証セッション中は類似度も表示する
+                sim_by_face = {id(f): sv for f, sv in face_sims}
+                for face in faces:
+                    fsim = sim_by_face.get(id(face))
+                    matched = fsim is not None and fsim > FACE_MATCH_THRESHOLD
+                    fb = face.bbox.astype(int)
+                    cv2.rectangle(frame, (int(fb[0]), int(fb[1])), (int(fb[2]), int(fb[3])),
+                                  (0, 255, 255) if matched else (160, 160, 160), 2)
+                    if fsim is not None:
+                        put_text(frame, f"face:{fsim:.2f}", (int(fb[0]), max(int(15 * UI), int(fb[1]) - int(8 * UI))),
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255) if matched else (200, 200, 200), 1, hud=False)
 
                 if yolo_results[0].boxes.id is not None:
                     boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
@@ -703,7 +913,9 @@ def camera_processing_loop():
 
                     for box, track_id in zip(boxes, track_ids):
                         x_center = int((box[0] + box[2]) / 2)
-                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), THICK)
+                        put_text(frame, f"ID:{track_id}", (int(box[0]), int(box[3]) + int(18 * UI)),
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, hud=False)
 
                         if state.last_member_embedding is not None:
                             for face in faces:
@@ -721,12 +933,14 @@ def camera_processing_loop():
 
                         rec = face_sim_history.get(track_id)
                         if rec is not None and current_time - rec["time"] <= FACE_TIMEOUT:
-                            cv2.putText(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(15, int(box[1]) - 8)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                            put_text(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(int(15 * UI), int(box[1]) - int(8 * UI))),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, hud=False)
 
                         if track_id in track_history:
                             prev_x = track_history[track_id]
-                            if prev_x < LINE_X and x_center >= LINE_X:
+                            if skip_tid is not None and track_id == skip_tid and prev_x < LINE_X and x_center >= LINE_X:
+                                pass   # 認証セッションの本人の通過は、上の判定（線の向こう側で本人を確認）で扱う
+                            elif prev_x < LINE_X and x_center >= LINE_X:
                                 time_since_qr = current_time - state.last_qr_time
                                 rec = face_sim_history.get(track_id)
                                 best_sim = None
@@ -755,8 +969,18 @@ def camera_processing_loop():
 
                         track_history[track_id] = x_center
 
-                cv2.putText(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                put_text(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                if entrance_session is not None:
+                    remain = max(0.0, CO_TRAILING_WINDOW - (current_time - state.last_qr_time))
+                    if entrance_session.authed:
+                        put_text(frame, f"AUTH OK: {entrance_session.member_id} sim={entrance_session.match_sim:.2f} "
+                                        f"-> go through ({remain:.0f}s)", (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    else:
+                        put_text(frame, f"QR OK: {entrance_session.member_id} - show your face ({remain:.0f}s)",
+                                 (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                elif current_time < auth_banner["until"]:
+                    put_text(frame, auth_banner["text"], (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_banner["color"], 2)
 
             else:
                 # ＝ トレーニングルームモード（椅子検知 ＋ 座り判定）＝
@@ -791,12 +1015,12 @@ def camera_processing_loop():
 
                 # 2. 椅子と人（骨格つき）を検出
                 detected_seats = []
-                seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
+                seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, imgsz=YOLO_IMGSZ, verbose=False)[0]
                 if seat_det.boxes is not None and len(seat_det.boxes) > 0:
                     detected_seats = list(seat_det.boxes.xyxy.cpu().numpy())
 
                 persons = []
-                pose_det = pose_model(frame, conf=0.3, verbose=False)[0]
+                pose_det = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
                 if pose_det.boxes is not None and len(pose_det.boxes) > 0 and pose_det.keypoints is not None:
                     p_boxes = pose_det.boxes.xyxy.cpu().numpy()
                     kxy_all = pose_det.keypoints.xy.cpu().numpy()
@@ -843,16 +1067,16 @@ def camera_processing_loop():
 
                 # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
                 for box, kxy_i, kcf_i in persons:
-                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), THICK)
                     for idx in (11, 12, 13, 14):
                         if kcf_i[idx] >= KP_CONF:
-                            cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), 4, (0, 0, 255), -1)
+                            cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), int(4 * UI), (0, 0, 255), -1)
                 for m in seat_memory:
                     b = m["box"]
                     color = (0, 165, 255) if m["live"] else (0, 255, 255)
-                    cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, 2)
+                    cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, THICK)
                 n_live = sum(1 for m in seat_memory if m["live"])
-                cv2.putText(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
+                put_text(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
                                    f"overlap={max(overlap, 0.0):.2f} why={why}",
                             (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
@@ -878,7 +1102,7 @@ def camera_processing_loop():
                 else:
                     id_source = "face"
                 sim_txt = f"{best_face_sim:.2f}" if best_face_sim is not None else "-"
-                cv2.putText(frame, f"face={face_note} faces={len(faces)} best={sim_txt}/{ROOM_FACE_THRESHOLD:.2f} "
+                put_text(frame, f"face={face_note} faces={len(faces)} best={sim_txt}/{ROOM_FACE_THRESHOLD:.2f} "
                                    f"id={id_source} loop={loop_dt:.2f}s",
                             (20, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                 if is_sitting and current_time - last_face_log >= 3.0:
@@ -896,20 +1120,20 @@ def camera_processing_loop():
                 if confirmed:
                     state.update_machine_occupancy(active_machine_key, detected_user_name, current_time,
                                                    started_at=sit_since, member_id=detected_member_id)
-                    cv2.putText(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    put_text(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 elif sitting_now:
-                    cv2.putText(frame, f"Sitting? confirming [{detected_member_id or '-'}]{held_mark} "
+                    put_text(frame, f"Sitting? confirming [{detected_member_id or '-'}]{held_mark} "
                                        f"{current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
                                 (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 else:
                     status_text = f"User: {detected_user_name}{held_mark} | Sitting: {is_sitting}"
-                    cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+                    put_text(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
                 state.release_idle_machines(current_time)
                 if current_time - last_push_time >= ROOM_PUSH_INTERVAL:
                     state.push_update()
                     last_push_time = current_time
-                cv2.putText(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                put_text(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             with render_lock:
                 current_output_frame = frame.copy()
@@ -964,7 +1188,7 @@ def api_register(data: RegisterRequest):
 
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-        face_app.prepare(ctx_id=0, det_size=(640, 640)) # 👈 640x640に統一
+        face_app.prepare(ctx_id=0, det_size=(1280, 1280))
         faces = face_app.get(frame)
 
         if len(faces) == 0:
@@ -1026,7 +1250,7 @@ async def video_feed():
             with render_lock:
                 frame_to_send = current_output_frame
             if frame_to_send is not None:
-                ret, buffer = cv2.imencode('.jpg', frame_to_send)
+                ret, buffer = cv2.imencode('.jpg', frame_to_send, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
                 if ret:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
