@@ -123,17 +123,8 @@
     <script>
         // Webカメラの起動
         const video = document.getElementById('video');
-        // 1280x720 を要求（ideal なので、非対応のカメラでも失敗せず可能な最大に近い解像度になる）
-        navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-            audio: false
-        })
-            .then(stream => {
-                video.srcObject = stream;
-                video.addEventListener('loadedmetadata', () => {
-                    console.log("登録カメラの解像度: " + video.videoWidth + "x" + video.videoHeight);
-                }, { once: true });
-            })
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => { video.srcObject = stream; })
             .catch(err => { alert("カメラの起動に失敗しました: " + err); });
 
         function takeSnapshot() {
@@ -149,20 +140,13 @@
             msgDiv.style.color = "#007bff";
             msgDiv.innerText = "登録処理中...（顔の特徴量を抽出しています）";
 
-            // カメラの準備ができていない（videoWidth が 0）と低解像度で撮れてしまうので止める
-            if (!video.videoWidth || !video.videoHeight) {
-                msgDiv.style.color = "#dc3545";
-                msgDiv.innerText = "カメラの準備ができていません。映像が表示されてからもう一度お試しください。";
-                return;
-            }
-
             const canvas = document.getElementById('canvas');
-            canvas.width = video.videoWidth;     // カメラの実解像度のまま撮影する（縮小しない）
-            canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
             const context = canvas.getContext('2d');
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            const imageDataUrl = canvas.toDataURL('image/jpeg', 0.95);   // 顔特徴量の抽出用なので高画質で送る
+            const imageDataUrl = canvas.toDataURL('image/jpeg');
 
             // サーバーへ送信
             fetch('/api/register', {

@@ -41,7 +41,7 @@ last_detected_qr = "" # 直近のQRコードを保持する変数
 # =========================================================================
 DB_PATH = "gym_security.db"
 DUPLICATE_QR_WINDOW = 5.0
-STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（1280x720だと既定の95は重いので下げる）
+STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（既定の95より少し軽くする）
 CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
@@ -55,10 +55,10 @@ SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
 SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
 
 # 🎞️ 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
-FRAME_W, FRAME_H = 1280, 720
+FRAME_W, FRAME_H = 640, 480    # 元の解像度。高精度にしたいときは 1280, 720 などに上げる（その分CPU負荷が大きく増える）
 LINE_X = FRAME_W // 2          # 入口の通過判定ライン（画面中央）
-YOLO_IMGSZ = 1280              # YOLOの推論サイズ。処理が重いときはここを下げる（例: 960 / 640）
-FACE_DET_SIZE = (1280, 736)    # 顔検出の入力サイズ（幅, 高さ）。16:9用で32の倍数
+YOLO_IMGSZ = 640               # YOLOの推論サイズ（ultralyticsの既定値）。FRAME_W を上げたら合わせて上げる
+FACE_DET_SIZE = (640, 640)     # 顔検出の入力サイズ（幅, 高さ）。入力が640x480なら640で十分（1280にしても精度は上がらず重くなるだけ）
 UI = FRAME_W / 640.0           # 画面上の文字・線の拡大率（HUDの見た目を従来と同じ比率に保つ）
 THICK = max(1, int(round(2 * UI * 0.75)))   # ボックス・ラインの太さ
 CAMERA_ID = 0  # 内蔵カメラ1台
@@ -84,10 +84,10 @@ SHOULDER_ABOVE_SEAT_MAX = 0.40     # 腰が見えない（上半身のみ）と�
 STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
 # 🚪 入口：「顔認証」と「線の通過」を分けて判定する設定
-ENTRANCE_CROSS_MARGIN_PX = 40        # 認証済みの本人が、線からこの距離だけ向こう側（右）で見つかったら通過（入館）とする
+ENTRANCE_CROSS_MARGIN_PX = round(FRAME_W * 0.03)      # 認証済みの本人が、線からこの距離だけ向こう側（右）で見つかったら通過（入館）とする（幅の3%）
 ENTRANCE_REASSOC_SECONDS = 3.0       # 本人を見失っても、この秒数以内なら直前の位置に近い枠を本人として探し直す
-ENTRANCE_REASSOC_BASE_PX = 150       # 探し直しで許容する移動距離（基本）
-ENTRANCE_REASSOC_PX_PER_SEC = 250    # 探し直しで許容する移動距離（見失った秒数あたりの追加）
+ENTRANCE_REASSOC_BASE_PX = round(FRAME_W * 0.12)      # 探し直しで許容する移動距離（基本。幅の12%）
+ENTRANCE_REASSOC_PX_PER_SEC = round(FRAME_W * 0.20)   # 探し直しで許容する移動距離（見失った秒数あたりの追加。幅の20%）
 ENTRANCE_OTHER_FACE_SIM = 0.15       # 会員との類似度がこれ未満の顔を含む枠は、別人として探し直しの候補から外す
 ENTRANCE_BANNER_SECONDS = 4.0        # 認証NG・失効のメッセージを画面に出す秒数
 
