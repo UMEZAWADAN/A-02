@@ -1646,6 +1646,7 @@ def api_admin_register(data: AdminAuthRequest):
 def get_admin_login_page(request: Request):
     return templates.TemplateResponse(request, "admin_login.html", {})
 
+
 if __name__ == "__main__":
     camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
     camera_thread.start()
