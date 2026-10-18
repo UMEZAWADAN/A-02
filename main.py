@@ -206,6 +206,10 @@ class SystemStateManager:
         self.rejected_time = 0.0
         self.co_trailing_alert = False
         
+        # 館内にいる会員（QR＋顔で正規に入館し、まだ退館していない人）。退館時の識別はこの人たちに限る
+        self.inside_members = {}   # {member_id: 入館時刻}
+        self._restore_inside_members()
+
         # 入口の1:1照合用に直近の会員情報と顔特徴量を保持
         self.last_member_id = None
         self.last_member_embedding = None
@@ -220,6 +224,40 @@ class SystemStateManager:
         
         self.update_queue = Queue()
         self.recent_entries = [] # 直近の入室者リスト
+
+    def _restore_inside_members(self):
+        """再起動で「館内にいる人」が消えないよう、直近24時間のログから復元する。"""
+        try:
+            from datetime import timedelta
+            since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                rows = conn.execute(
+                    "SELECT timestamp, direction, member_id, is_alert FROM passing_logs WHERE timestamp >= ? ORDER BY id",
+                    (since,)).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"⚠️ 館内の会員の復元に失敗: {e}")
+            return
+        for ts, direction, label, alert in rows:
+            m = re.match(r"^.*\(([^()]+)\)$", label or "")
+            if not m:
+                continue
+            if direction == "IN" and not alert:
+                self.inside_members[m.group(1)] = ts
+            elif direction == "OUT":
+                self.inside_members.pop(m.group(1), None)
+
+    def mark_inside(self, member_id):
+        """正規に入館した会員を「館内にいる」として記録する。"""
+        with self._lock:
+            self.inside_members[member_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def leave_if_inside(self, member_id):
+        """館内にいる会員なら退館扱いにして True。入館記録がなければ False。"""
+        with self._lock:
+            return self.inside_members.pop(member_id, None) is not None
 
     def add_recent_entry(self, member_id, name, color_feat, current_time):
         with self._lock:
@@ -893,6 +931,7 @@ def camera_processing_loop():
                         print(f"{member_name}：認証成功（類似度: {sess.match_sim:.2f}）… 顔認証後に線の向こう側で確認")
                         state.register_pass("IN", sess.label, 0,
                                             note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
+                        state.mark_inside(sess.member_id)
                         if sess.last_box is not None:
                             state.add_recent_entry(sess.member_id, member_name,
                                                    get_box_color_feature(frame, sess.last_box), current_time)
@@ -998,6 +1037,7 @@ def camera_processing_loop():
                                     member_name = state.last_scanned_qr.split(" (")[0] if " (" in state.last_scanned_qr else state.last_scanned_qr
                                     print(f"{member_name}：認証成功（類似度: {best_sim:.2f}）")
                                     state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
+                                    state.mark_inside(state.last_member_id)
                                     color_feat = get_box_color_feature(frame, box)
                                     state.add_recent_entry(state.last_member_id, member_name, color_feat, current_time)
                                 else:
@@ -1008,10 +1048,16 @@ def camera_processing_loop():
                                 # 退館：QRは不要。線を越えるまでに顔で識別できた会員を記録する
                                 erec = exit_id_history.get(track_id)
                                 if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
-                                    out_label = f"{erec['name']} ({erec['member_id']})"
-                                    print(f"{erec['name']}：退館（顔の類似度: {erec['sim']:.2f}）")
-                                    state.register_pass("OUT", out_label, 0,
-                                                        note=f"顔で識別（類似度 {erec['sim']:.2f}）")
+                                    if state.leave_if_inside(erec["member_id"]):
+                                        out_label = f"{erec['name']} ({erec['member_id']})"
+                                        print(f"{erec['name']}：退館（顔の類似度: {erec['sim']:.2f}）")
+                                        state.register_pass("OUT", out_label, 0,
+                                                            note=f"顔で識別（類似度 {erec['sim']:.2f}）")
+                                    else:
+                                        out_reason = "入館記録がない（QR認証なしで入館した可能性）"
+                                        print(f"退館者を Unknown として記録します（理由: {out_reason}）")
+                                        state.register_pass("OUT", "Unknown", 0,
+                                                            note=f"{out_reason}／顔は {erec['name']} ({erec['member_id']}) に類似（{erec['sim']:.2f}）")
                                 else:
                                     if member_matrix is None:
                                         out_reason = "顔データが登録された会員がいないため識別できない"
@@ -1645,7 +1691,6 @@ def api_admin_register(data: AdminAuthRequest):
 @app.get("/admin/login", response_class=HTMLResponse)
 def get_admin_login_page(request: Request):
     return templates.TemplateResponse(request, "admin_login.html", {})
-
 
 if __name__ == "__main__":
     camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
