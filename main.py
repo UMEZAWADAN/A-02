@@ -54,6 +54,10 @@ SMTP_PORT = 587
 SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
 SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
 
+# 🚨 違反メール：マシンの利用時間が上限を超えた会員に、利用の終了時にメールで違反内容を知らせる
+VIOLATION_MAIL_ENABLED = True       # False にするとメールを送らない
+VIOLATION_MAIL_COOLDOWN = 600.0     # 同じ会員には、この秒数のあいだ違反メールを重ねて送らない（識別の揺れで続けて送られるのを防ぐ）
+
 # 🎞️ 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
 FRAME_W, FRAME_H = 640, 480    # 元の解像度。高精度にしたいときは 1280, 720 などに上げる（その分CPU負荷が大きく増える）
 LINE_X = FRAME_W // 2          # 入口の通過判定ライン（画面中央）
@@ -197,6 +201,84 @@ print(f">> 使用DB: {os.path.abspath(DB_PATH)}")
 print(">> [1/3] YOLO（人・椅子検出）モデルを読み込み中...")
 yolo_model = None
 qr_detector = cv2.QRCodeDetector()
+
+# =========================================================================
+# 🚨 違反メール（マシンの利用時間超過）
+# =========================================================================
+_violation_mail_last = {}   # {member_id: 最後に送信した時刻}
+_violation_mail_lock = threading.Lock()
+
+def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
+    """時間超過した会員に、違反内容をメールで送る。送れたら True。"""
+    from email.header import Header
+    info = MACHINE_LIMITS.get(machine_key, {})
+    limit = info.get("limit", 0.0)
+    machine_name = info.get("name", machine_key)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            row = conn.execute("SELECT name, email FROM members WHERE member_id = ?", (member_id,)).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"⚠️ 違反メール：会員情報の取得に失敗: {e}")
+        return False
+    if row is None or not row[1]:
+        print(f"⚠️ 違反メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
+        return False
+    name, email = row
+
+    body = (
+        f"{name} 様\n\n"
+        "ご利用中のマシンで、利用時間の上限を超過しましたのでお知らせします。\n\n"
+        "■ 違反内容：マシンの利用時間超過\n"
+        f"■ マシン：{machine_name}\n"
+        f"■ 利用開始：{start_str}\n"
+        f"■ 利用終了：{end_str}\n"
+        f"■ 利用時間：{_fmt_seconds(duration)}\n"
+        f"■ 上限：{_fmt_seconds(limit)}\n"
+        f"■ 超過時間：{_fmt_seconds(duration - limit)}\n\n"
+        "他の会員様がお待ちの場合がありますので、上限時間内でのご利用にご協力をお願いいたします。"
+    )
+    msg = MIMEMultipart()
+    msg["Subject"] = Header("【ジムセキュリティ】マシン利用時間超過のお知らせ", "utf-8")
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = email
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, email, msg.as_string())
+    except Exception as e:
+        print(f"⚠️ 違反メールの送信に失敗（{name} / {member_id}）: {e}")
+        return False
+    print(f"📧 【違反メール送信】 {name}（{member_id}）宛：{machine_name} の時間超過（{_fmt_seconds(duration)} / 上限 {_fmt_seconds(limit)}）")
+    return True
+
+def notify_overtime_async(member_id, machine_key, start, end, duration):
+    """時間超過を会員にメールで知らせる。別スレッドで送るので、カメラ処理は止まらない。"""
+    if not VIOLATION_MAIL_ENABLED:
+        return
+    if not member_id:
+        print("⚠️ 時間超過ですが会員IDが分からないため、違反メールは送りません")
+        return
+    now = time.time()
+    with _violation_mail_lock:
+        last = _violation_mail_last.get(member_id)
+        if last is not None and now - last < VIOLATION_MAIL_COOLDOWN:
+            print(f"ℹ️ 違反メールは直近に送信済みのためスキップ: {member_id}")
+            return
+        _violation_mail_last[member_id] = now
+
+    def worker():
+        ok = _send_overtime_mail(member_id, machine_key, start.strftime("%Y-%m-%d %H:%M:%S"),
+                                 end.strftime("%Y-%m-%d %H:%M:%S"), duration)
+        if not ok:   # 送れなかったときは、次の機会に再送できるよう記録を戻す
+            with _violation_mail_lock:
+                _violation_mail_last.pop(member_id, None)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 # =========================================================================
 # 💾 システム状態管理（ステート）用クラス
@@ -426,6 +508,8 @@ class SystemStateManager:
             conn.close()
         except Exception as e:
             print(f"⚠️ 占有ログの保存に失敗: {e}")
+        if m_state["duration"] > MACHINE_LIMITS[m_key]["limit"]:
+            notify_overtime_async(m_state.get("member_id"), m_key, start, end, m_state["duration"])
 
     def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None, member_id=None):
         with self._lock:
