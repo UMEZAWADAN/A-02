@@ -215,6 +215,7 @@ class SystemStateManager:
         self.inside_members = {}   # {member_id: 入館時刻}
         self.last_clothes_dist = None   # 直近の服装推定で採用した色の差（診断表示用）
         self._clothes_log_time = 0.0
+        self.clothes_diag = "not evaluated"   # 直近の服装照合の結果（画面に表示。cv2は日本語を描けないので英数字）
         self._restore_inside_members()
 
         # 入口の1:1照合用に直近の会員情報と顔特徴量を保持
@@ -281,15 +282,18 @@ class SystemStateManager:
         ・上半身と下半身の色分布が、どちらも十分近い会員だけを候補にする。
         ・候補が複数いて1位と2位の差が小さいときは、曖昧なので決めない。"""
         if not CLOTHES_FALLBACK_ENABLED:
+            self.clothes_diag = "off"
             return None, None
         with self._lock:
             # 古い記録は、新しい入館者がいなくても照合の時点で候補から外す
             candidates = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
             if not candidates:
+                self.clothes_diag = "no entry records (none within 15min)"
                 return None, None
 
             target = get_box_color_feature(frame, person_box)
             if target is None:
+                self.clothes_diag = "no color from box"
                 return None, None
 
             # 会員ごとに一番近い記録を使う（同じ人が複数回入館していても、1位と2位の比較に影響させない）
@@ -303,6 +307,8 @@ class SystemStateManager:
             best_d, best = ranked[0]
             second_d = ranked[1][0] if len(ranked) > 1 else None
 
+            self.clothes_diag = (f"cand={len(ranked)} best={best['member_id']} d={best_d:.1f}"
+                                 + (f" 2nd={second_d:.1f}" if second_d is not None else ""))
             reason = None
             if best_d >= CLOTHES_MAX_DIST:
                 reason = f"服装が違う（最小の差 {best_d:.2f} ≥ 上限 {CLOTHES_MAX_DIST}）"
@@ -310,11 +316,13 @@ class SystemStateManager:
                 reason = f"服装が似た候補が複数いて決められない（差 {best_d:.2f} / {second_d:.2f}）"
 
             if reason is not None:
+                self.clothes_diag += " -> reject"
                 if current_time - self._clothes_log_time >= 3.0:   # 毎フレームは出さない
                     print(f"👕 服装による推定は見送り：{reason}")
                     self._clothes_log_time = current_time
                 return None, None
 
+            self.clothes_diag += " -> match"
             self.last_clothes_dist = best_d
             return best["name"], best["member_id"]
 
@@ -551,8 +559,9 @@ class MemberFaceCache:
 member_cache = MemberFaceCache()
 
 def get_box_color_feature(frame, box):
-    """人の枠から服装の色を作る：上半身と下半身それぞれの代表色（Lab色空間の中央値）。
-    中央値なので、背景や腕・手の混入に強い。取れないときは None。戻り値は [L,a,b, L,a,b]。"""
+    """人の枠から服装の色を作る：上半身（胸まわり）の代表色（Lab色空間の中央値）。戻り値は [L,a,b]。取れないときは None。
+    入口は立っている人、ルームは座っている人の枠なので、下半身は写る部位が変わって比べられない。
+    そのため、どちらでも同じ部位（胸まわり）が写る上半身だけを使う。中央値なので背景や腕の混入に強い。"""
     x1, y1, x2, y2 = map(int, box)
     h_img, w_img, _ = frame.shape
     x1, y1 = max(0, x1), max(0, y1)
@@ -561,25 +570,19 @@ def get_box_color_feature(frame, box):
         return None
     h, w = y2 - y1, x2 - x1
     cx1, cx2 = x1 + int(w * 0.2), x2 - int(w * 0.2)   # 枠の中央60%の幅だけ使い、背景の混入を減らす
-    feats = []
-    for ry1, ry2 in ((y1 + int(h * 0.20), y1 + int(h * 0.50)),    # 上半身（胸まわり）
-                     (y1 + int(h * 0.60), y1 + int(h * 0.95))):   # 下半身
-        roi = frame[ry1:ry2, cx1:cx2]
-        if roi.size == 0:
-            return None
-        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
-        feats.append(np.median(lab, axis=0))
-    return np.concatenate(feats)
+    roi = frame[y1 + int(h * 0.20):y1 + int(h * 0.50), cx1:cx2]
+    if roi.size == 0:
+        return None
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
+    return np.median(lab, axis=0)
 
 _CLOTHES_WEIGHT = np.array([0.5, 1.0, 1.0], dtype=np.float32)   # 明るさ(L)は照明で変わりやすいので重みを半分にする
 
 def clothes_distance(a, b):
-    """2つの服装の色の差。上半身・下半身のうち大きいほうを返す（どちらかが違えば別物）。"""
+    """2つの服装（上半身の色）の差。大きいほど別の服。"""
     if a is None or b is None or a.shape != b.shape:
         return 255.0
-    d_up = float(np.linalg.norm((a[:3] - b[:3]) * _CLOTHES_WEIGHT))
-    d_lo = float(np.linalg.norm((a[3:] - b[3:]) * _CLOTHES_WEIGHT))
-    return max(d_up, d_lo)
+    return float(np.linalg.norm((a - b) * _CLOTHES_WEIGHT))
 
 def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
     if last_scanned_qr == "None":
@@ -1203,6 +1206,19 @@ def camera_processing_loop():
                         estimated_by_clothes = True
                         print(f"👕 【服装から推定】 顔が見えないため入口の服装記録から {fb_name} と推定しました"
                               f"（色の差 {state.last_clothes_dist:.2f} / 上限 {CLOTHES_MAX_DIST}）")
+
+                if estimated_by_clothes:
+                    clothes_txt = f"USED d={state.last_clothes_dist:.1f}"
+                elif detected_user_name != "Guest":
+                    clothes_txt = "skip (face matched)"
+                elif not is_sitting or sit_box is None:
+                    clothes_txt = "skip (not sitting)"
+                elif identity_holder.has_identity(current_time):
+                    clothes_txt = "skip (identity held)"
+                else:
+                    clothes_txt = state.clothes_diag
+                put_text(frame, f"clothes: {clothes_txt} (max {CLOTHES_MAX_DIST:.0f})",
+                         (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
 
                 # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
                 for box, kxy_i, kcf_i in persons:
