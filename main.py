@@ -91,6 +91,9 @@ ENTRANCE_REASSOC_PX_PER_SEC = round(FRAME_W * 0.20)   # 探し直しで許容す
 ENTRANCE_OTHER_FACE_SIM = 0.15       # 会員との類似度がこれ未満の顔を含む枠は、別人として探し直しの候補から外す
 ENTRANCE_BANNER_SECONDS = 4.0        # 認証NG・失効のメッセージを画面に出す秒数
 
+# 🚪 退館：QRは使わず、顔だけで誰が出たかを識別する（全会員との1:N照合）
+EXIT_FACE_THRESHOLD = 0.40    # 退館時の顔識別のしきい値。別人に誤認されるなら上げる、識別できないなら下げる（画面の会員ID＋類似度を見て調整）
+
 RECENT_ENTRY_TTL = 900.0      # 入口で記録した服装情報を、服装による補助判定の候補に残す秒数（15分）
 
 def put_text(img, text, org, font, fs, color, th=2, hud=True):
@@ -517,6 +520,19 @@ def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
         return False, f"顔の類似度が不足（最大{best_sim:.2f} ≤ しきい値{FACE_MATCH_THRESHOLD}）"
     return True, ""
 
+def identify_face_1n(embedding, member_ids, member_names, member_matrix):
+    """顔の特徴量を全会員と照合し、最も似ている会員 (member_id, name, sim) を返す。
+    顔データ付きの会員がいない／次元が合わないときは None。"""
+    if member_matrix is None:
+        return None
+    fe = np.asarray(embedding, dtype=np.float32)
+    fn = np.linalg.norm(fe)
+    if fn == 0 or fe.shape[0] != member_matrix.shape[1]:
+        return None
+    sims = member_matrix @ (fe / fn)
+    idx = int(np.argmax(sims))
+    return member_ids[idx], member_names[idx], float(sims[idx])
+
 def sit_overlap_ratio(p_box, seat_boxes):
     px1, py1, px2, py2 = p_box
     mid_y = py1 + (py2 - py1) * 0.5
@@ -792,6 +808,7 @@ def camera_processing_loop():
 
     track_history = {}
     face_sim_history = {}
+    exit_id_history = {}   # 退館用：追跡IDごとに、顔で識別した会員 {member_id, name, sim, time}
     last_push_time = 0.0
     last_err_log = 0.0
     prev_frame_time = None   # 1フレームの処理時間の計測用（遅いとタイマー系の判定に影響するため画面に出す）
@@ -852,6 +869,9 @@ def camera_processing_loop():
 
                 for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                     del face_sim_history[tid]
+                for tid in [t for t, r in exit_id_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
+                    del exit_id_history[tid]
+                member_ids, member_names, member_matrix = member_cache.get()   # 退館時の1:N識別用
 
                 tracked = []   # [(track_id, box), ...]
                 if yolo_results[0].boxes.id is not None:
@@ -931,6 +951,27 @@ def camera_processing_loop():
                                         rec["best"] = sim
                                         rec["time"] = current_time
 
+                        # 退館用：この人の枠内の顔を全会員と照合（1:N）。QRは使わず、最も似た会員を線を越えるまで保持する
+                        for face in faces:
+                            fcx = (face.bbox[0] + face.bbox[2]) / 2
+                            fcy = (face.bbox[1] + face.bbox[3]) / 2
+                            if not (box[0] <= fcx <= box[2] and box[1] <= fcy <= box[3]):
+                                continue
+                            ident = identify_face_1n(face.embedding, member_ids, member_names, member_matrix)
+                            if ident is None or ident[2] <= EXIT_FACE_THRESHOLD:
+                                continue
+                            erec = exit_id_history.get(track_id)
+                            if erec is None or current_time - erec["time"] > FACE_TIMEOUT or ident[2] > erec["sim"]:
+                                exit_id_history[track_id] = {"member_id": ident[0], "name": ident[1],
+                                                             "sim": ident[2], "time": current_time}
+                            else:
+                                erec["time"] = current_time
+                        erec = exit_id_history.get(track_id)
+                        if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
+                            put_text(frame, f"{erec['member_id']} {erec['sim']:.2f}",
+                                     (int(box[0]), int(box[3]) + int(36 * UI)),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, hud=False)
+
                         rec = face_sim_history.get(track_id)
                         if rec is not None and current_time - rec["time"] <= FACE_TIMEOUT:
                             put_text(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(int(15 * UI), int(box[1]) - int(8 * UI))),
@@ -964,12 +1005,25 @@ def camera_processing_loop():
                                     state.set_alert(True)
                                     state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
                             elif prev_x > LINE_X and x_center <= LINE_X:
-                                state.register_pass("OUT", "Unknown", 0)
+                                # 退館：QRは不要。線を越えるまでに顔で識別できた会員を記録する
+                                erec = exit_id_history.get(track_id)
+                                if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
+                                    out_label = f"{erec['name']} ({erec['member_id']})"
+                                    print(f"{erec['name']}：退館（顔の類似度: {erec['sim']:.2f}）")
+                                    state.register_pass("OUT", out_label, 0,
+                                                        note=f"顔で識別（類似度 {erec['sim']:.2f}）")
+                                else:
+                                    if member_matrix is None:
+                                        out_reason = "顔データが登録された会員がいないため識別できない"
+                                    else:
+                                        out_reason = f"退館前に顔を識別できなかった（しきい値 {EXIT_FACE_THRESHOLD}）"
+                                    print(f"退館者を識別できませんでした（理由: {out_reason}）")
+                                    state.register_pass("OUT", "Unknown", 0, note=out_reason)
                                 state.set_alert(False)
 
                         track_history[track_id] = x_center
 
-                put_text(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                put_text(frame, "MODE: [ENTRANCE (IN: QR+Face / OUT: Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 if entrance_session is not None:
                     remain = max(0.0, CO_TRAILING_WINDOW - (current_time - state.last_qr_time))
