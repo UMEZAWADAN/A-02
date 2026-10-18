@@ -8,15 +8,18 @@ from io import BytesIO
 import json
 import numpy as np
 import os
+import re
 import smtplib
 import sqlite3
 import threading
 import time
+import traceback
+import unicodedata
 import uuid
 from datetime import datetime
 from queue import Queue
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel
@@ -38,10 +41,12 @@ last_detected_qr = "" # 直近のQRコードを保持する変数
 # =========================================================================
 DB_PATH = "gym_security.db"
 DUPLICATE_QR_WINDOW = 5.0
-CO_TRAILING_WINDOW = 5.0
+STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（既定の95より少し軽くする）
+CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
-FACE_TIMEOUT = 5.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
-FACE_MATCH_THRESHOLD = 0.55   # 顔が一致したとみなすコサイン類似度（ログを見て調整）
+FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
+FACE_MATCH_THRESHOLD = 0.40   # 顔が一致したとみなすコサイン類似度（入口の1:1判定。ログを見て調整）
+ROOM_FACE_THRESHOLD = 0.40    # ルームモードの1:N判定用。部屋のカメラは遠い・斜めで類似度が低めになりやすいので、画面の best= を見て下げる
 
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
@@ -49,15 +54,56 @@ SMTP_PORT = 587
 SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
 SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
 
-LINE_X = 320
+# 🎞️ 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
+FRAME_W, FRAME_H = 640, 480    # 元の解像度。高精度にしたいときは 1280, 720 などに上げる（その分CPU負荷が大きく増える）
+LINE_X = FRAME_W // 2          # 入口の通過判定ライン（画面中央）
+YOLO_IMGSZ = 640               # YOLOの推論サイズ（ultralyticsの既定値）。FRAME_W を上げたら合わせて上げる
+FACE_DET_SIZE = (640, 640)     # 顔検出の入力サイズ（幅, 高さ）。入力が640x480なら640で十分（1280にしても精度は上がらず重くなるだけ）
+UI = FRAME_W / 640.0           # 画面上の文字・線の拡大率（HUDの見た目を従来と同じ比率に保つ）
+THICK = max(1, int(round(2 * UI * 0.75)))   # ボックス・ラインの太さ
 CAMERA_ID = 0  # 内蔵カメラ1台
 
 # 🪑 椅子・座り判定の設定
 SEAT_CLASSES = [56]           # COCO: 56=chair（普通の椅子のみ。ベンチ等も拾いたい場合は 13=bench, 57=couch を追加）
 ROOM_MODEL_PATH = "yolo11n.pt"  # 椅子の検出が不安定なら "yolo11s.pt" や "yolo11m.pt" に変更（精度↑・速度↓）
+ROOM_PUSH_INTERVAL = 0.5      # ルームモードで画面へ状態を送る最小間隔（秒）。毎フレーム送るのをやめて負荷を下げる
 SEAT_RELEASE_GRACE = 5.0      # 座っていない状態がこの秒数続いたら、利用終了（マシンを空きに戻す）
 ROOM_CONF = 0.20              # ルームモードの検出しきい値（低めにして椅子の取りこぼしを減らす）
-SIT_OVERLAP_RATIO = 0.25      # 人の下半身ボックスが座面ボックスと重なっている割合の下限
+SIT_OVERLAP_RATIO = 0.20      # 人の下半身ボックスが椅子ボックスと重なっている割合の下限（画面の overlap= を見て調整）
+SIT_CONFIRM_SECONDS = 2.0     # 「座っている」がこの秒数続いて初めてタイマー開始（椅子にかすっただけを除外）
+SIT_BREAK_TOLERANCE = 1.0     # 座り判定がこの秒数以内の途切れなら、座り続けているとみなす
+POSE_MODEL_PATH = "yolo11n-pose.pt"  # 骨格推定モデル（初回起動時に自動ダウンロード）
+KP_CONF = 0.4                 # 骨格の点（腰・膝など）を「見えている」とみなす信頼度
+SIT_THIGH_DROP_RATIO = 0.60   # (膝−腰の縦の差)÷(胴の長さ)。立つと約1.0（遠近で縮んでも0.7前後）、座ると0〜0.5。これ以上なら立っているとみなす（従来は0.75）
+IDENTITY_HOLD_SECONDS = 15.0  # 顔認識が外れても、直前に特定した会員をこの秒数は保持（座っている間は保持し続ける）
+SEAT_MEMORY_SECONDS = 10.0    # 椅子が検出できなくなっても、この秒数は直前の位置を覚えておく（座った人に隠れる対策）
+SEAT_OCCLUDED_RATIO = 0.15    # 人が椅子ボックスの面積のこれ以上に重なっていたら「隠れている」とみなし、椅子の記憶を保持
+HIP_SEAT_MARGIN = 0.10        # 腰が椅子ボックスの上端よりこの割合だけ上でも許容
+HIP_SEAT_MIN_DEPTH_NOKNEE = 0.20   # 膝が見えないとき、腰は椅子ボックスの上端からこの割合より下にあること（座ると腰は椅子の中ほど、立つと上端付近）。-0.10 で従来どおり
+SHOULDER_ABOVE_SEAT_MAX = 0.40     # 腰が見えない（上半身のみ）とき、肩が椅子ボックスの上端より（椅子の高さ×この割合）以上高ければ立っているとみなす。座ると約0.15、立つと約0.55
+STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
+
+# 🚪 入口：「顔認証」と「線の通過」を分けて判定する設定
+ENTRANCE_CROSS_MARGIN_PX = round(FRAME_W * 0.03)      # 認証済みの本人が、線からこの距離だけ向こう側（右）で見つかったら通過（入館）とする（幅の3%）
+ENTRANCE_REASSOC_SECONDS = 3.0       # 本人を見失っても、この秒数以内なら直前の位置に近い枠を本人として探し直す
+ENTRANCE_REASSOC_BASE_PX = round(FRAME_W * 0.12)      # 探し直しで許容する移動距離（基本。幅の12%）
+ENTRANCE_REASSOC_PX_PER_SEC = round(FRAME_W * 0.20)   # 探し直しで許容する移動距離（見失った秒数あたりの追加。幅の20%）
+ENTRANCE_OTHER_FACE_SIM = 0.15       # 会員との類似度がこれ未満の顔を含む枠は、別人として探し直しの候補から外す
+ENTRANCE_BANNER_SECONDS = 4.0        # 認証NG・失効のメッセージを画面に出す秒数
+
+RECENT_ENTRY_TTL = 900.0      # 入口で記録した服装情報を、服装による補助判定の候補に残す秒数（15分）
+
+def put_text(img, text, org, font, fs, color, th=2, hud=True):
+    """cv2.putText と同じ引数。hud=True なら位置・文字サイズ・太さを解像度に合わせて拡大する。
+    人ボックスに付けるラベルなど、実座標を渡す場合は hud=False にする。"""
+    x, y = (int(org[0] * UI), int(org[1] * UI)) if hud else (int(org[0]), int(org[1]))
+    cv2.putText(img, text, (x, y), font, fs * UI, color, max(1, int(round(th * UI))))
+
+def open_camera():
+    cap = cv2.VideoCapture(CAMERA_ID)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+    return cap
 
 # 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
 active_mode = "entrance"
@@ -125,6 +171,13 @@ def init_database():
             duration REAL
         )
     """)
+    # 既存のDBには machine 列が無いので、足りなければ追加する
+    cursor.execute("PRAGMA table_info(occupancy_logs)")
+    if "machine" not in [row[1] for row in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE occupancy_logs ADD COLUMN machine TEXT")
+    cursor.execute("PRAGMA table_info(passing_logs)")
+    if "note" not in [row[1] for row in cursor.fetchall()]:
+        cursor.execute("ALTER TABLE passing_logs ADD COLUMN note TEXT")
     conn.commit()
     conn.close()
 
@@ -154,24 +207,50 @@ class SystemStateManager:
         self.last_member_id = None
         self.last_member_embedding = None
 
-        self.last_member_appearance = {
-            "upper_color": None,
-            "lower_color": None,
-            "aspect_ratio": 0.0
-        }
-        
         # ルーム監視用の状態管理
         self.active_users = {} 
         
         self.machine_states = {
-            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None, "last_seen": None} 
+            k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None, "last_seen": None, "member_id": None} 
             for k in MACHINE_LIMITS.keys()
         }
         
         self.update_queue = Queue()
+        self.recent_entries = [] # 直近の入室者リスト
+
+    def add_recent_entry(self, member_id, name, color_feat, current_time):
+        with self._lock:
+            self.recent_entries = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
+            self.recent_entries.append({
+                "member_id": member_id,
+                "name": name,
+                "color_feat": color_feat,
+                "time": current_time
+            })
+
+    def match_recent_entry_by_feature(self, person_box, frame, current_time):
+        with self._lock:
+            # 古い記録は、新しい入館者がいなくても照合の時点で候補から外す
+            candidates = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
+            if not candidates:
+                return None, None
+            
+            target_color = get_box_color_feature(frame, person_box)
+            best_match = None
+            min_dist = float('inf')
+            
+            for entry in candidates:
+                dist = np.linalg.norm(entry["color_feat"] - target_color)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_match = entry
+            
+            if min_dist < 80.0 and best_match is not None:
+                return best_match["name"], best_match["member_id"]
+                
+        return None, None
 
     def should_process_qr(self, qr_data: str, now: float) -> bool:
-        """同じQRが映り続けている間は再認証しない。有効QRなら有効時間(last_qr_time)だけ延長する"""
         with self._lock:
             if qr_data == self.accepted_token and (now - self.last_qr_time) <= DUPLICATE_QR_WINDOW:
                 self.last_qr_time = now
@@ -207,7 +286,6 @@ class SystemStateManager:
                     and (current_time - self.last_qr_time) <= CO_TRAILING_WINDOW
                 )
                 if auth_still_valid:
-                    # 有効な認証の直後に読み取りが崩れた/未登録QRが映っただけなら、認証状態を上書きしない
                     print(f"⚠️ 【QR読み取り無視】 有効な認証の直後に未登録の文字列を検出（認証は維持）: {qr_data!r}")
                     return
                 self.accepted_token = None
@@ -225,7 +303,7 @@ class SystemStateManager:
             self.co_trailing_alert = state
             self.push_update()
 
-    def register_pass(self, direction: str, member_id: str, is_alert: int):
+    def register_pass(self, direction: str, member_id: str, is_alert: int, note: str = None):
         with self._lock:
             if direction == "IN":
                 self.in_count += 1
@@ -234,27 +312,49 @@ class SystemStateManager:
             
             conn = sqlite3.connect(DB_PATH)
             conn.cursor().execute(
-                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert) VALUES (?, ?, ?, ?)",
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, member_id, is_alert)
+                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (?, ?, ?, ?, ?)",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, member_id, is_alert, note)
             )
             conn.commit()
             conn.close()
             self.push_update()
 
-    def update_machine_occupancy(self, active_machine_key, user_name, current_time):
+    def _log_occupancy(self, m_key, m_state):
+        if m_state["user"] == "-" or m_state["start_time"] is None or m_state["duration"] <= 0:
+            return
+        start = datetime.fromtimestamp(m_state["start_time"])
+        end = datetime.fromtimestamp(m_state["start_time"] + m_state["duration"])
+        who = m_state.get("member_id") or m_state["user"]
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.cursor().execute(
+                "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration, machine) VALUES (?, ?, ?, ?, ?)",
+                (who, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"),
+                 float(m_state["duration"]), m_key)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"⚠️ 占有ログの保存に失敗: {e}")
+
+    def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None, member_id=None):
         with self._lock:
             for m_key in self.machine_states.keys():
                 if m_key == active_machine_key and user_name != "Guest":
                     m_state = self.machine_states[m_key]
                     m_state["last_seen"] = current_time
                     if m_state["user"] != user_name:
+                        self._log_occupancy(m_key, m_state)
                         m_state["user"] = user_name
-                        m_state["start_time"] = current_time
-                        m_state["duration"] = 0.0
+                        m_state["member_id"] = member_id
+                        m_state["start_time"] = started_at if started_at is not None else current_time
+                        m_state["duration"] = current_time - m_state["start_time"]
                     else:
+                        if member_id is not None:
+                            m_state["member_id"] = member_id
                         if m_state["start_time"] is not None:
                             m_state["duration"] = current_time - m_state["start_time"]
-                    
+
                     limit = MACHINE_LIMITS[m_key]["limit"]
                     if m_state["duration"] > limit:
                         m_state["status"] = "overtime"
@@ -262,16 +362,16 @@ class SystemStateManager:
                         m_state["status"] = "using"
 
     def release_idle_machines(self, current_time):
-        """座っている検知が SEAT_RELEASE_GRACE 秒途切れたら利用終了。戻ってきたら0秒から計測し直す"""
         with self._lock:
-            for m_state in self.machine_states.values():
+            for m_key, m_state in self.machine_states.items():
                 if m_state["user"] != "-" and m_state["last_seen"] is not None \
                         and (current_time - m_state["last_seen"]) > SEAT_RELEASE_GRACE:
                     print(f"🪑 【利用終了】 {m_state['user']} / 占有 {m_state['duration']:.0f}秒")
+                    self._log_occupancy(m_key, m_state)
                     m_state.update({"user": "-", "duration": 0.0, "status": "free",
-                                    "start_time": None, "last_seen": None})
+                                    "start_time": None, "last_seen": None, "member_id": None})
 
-    def push_update(self):
+    def build_payload(self):
         machines_payload = []
         for key, info in MACHINE_LIMITS.items():
             st = self.machine_states[key]
@@ -292,54 +392,35 @@ class SystemStateManager:
         with mode_lock:
             current_active_mode = active_mode
 
-        data = {
+        # 「追跡中ユーザー／滞在時間／ステータス」は、利用中のマシンの状態から求める
+        in_use = [m for m in machines_payload if m["status"] in ("using", "overtime")]
+        if not in_use:
+            room_user, room_time, room_overtime = "Guest", 0, False
+        else:
+            room_user = in_use[0]["user"] if len(in_use) == 1 else "Multiple"
+            room_time = max(m["duration"] for m in in_use)
+            room_overtime = any(m["status"] == "overtime" for m in in_use)
+
+        return {
             "active_mode": current_active_mode,
             "in_count": self.in_count,
             "out_count": self.out_count,
             "last_qr": self.last_scanned_qr,
             "co_trailing_alert": self.co_trailing_alert,
-            "user_name": "Multiple" if len(self.active_users) > 0 else "Guest",
-            "accumulated_time": 0,
-            "is_overtime": False,
+            "user_name": room_user,
+            "accumulated_time": room_time,
+            "is_overtime": room_overtime,
             "machines": machines_payload,
             "logs": logs_payload
         }
-        self.update_queue.put(data)
+
+    def push_update(self):
+        self.update_queue.put(self.build_payload())
 
 state = SystemStateManager()
 
 current_output_frame = None
 render_lock = threading.Lock()
-
-def extract_appearance_features(frame, box):
-    try:
-        x1, y1, x2, y2 = map(int, box[:4])
-        h, w, _ = frame.shape
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        
-        person_crop = frame[y1:y2, x1:x2]
-        if person_crop.size == 0:
-            return None, None, 1.0
-
-        crop_h, crop_w, _ = person_crop.shape
-        aspect_ratio = crop_h / float(crop_w if crop_w > 0 else 1)
-
-        upper_body = person_crop[0:int(crop_h * 0.5), :]
-        if upper_body.size > 0:
-            upper_color = np.mean(upper_body, axis=(0, 1))
-        else:
-            upper_color = np.array([0, 0, 0], dtype=float)
-
-        lower_body = person_crop[int(crop_h * 0.5):crop_h, :]
-        if lower_body.size > 0:
-            lower_color = np.mean(lower_body, axis=(0, 1))
-        else:
-            lower_color = np.array([0, 0, 0], dtype=float)
-
-        return upper_color, lower_color, aspect_ratio
-    except Exception:
-        return None, None, 1.0
 
 def cosine_sim(a, b):
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
@@ -347,8 +428,81 @@ def cosine_sim(a, b):
         return 0.0
     return float(np.dot(a, b) / (na * nb))
 
+class MemberFaceCache:
+    """顔データ付き会員の一覧をメモリに保持する（毎フレームのDB読み込みを避ける）。
+    会員の登録・削除時は invalidate() で即座に破棄し、念のため ttl 秒ごとにも再読み込みする。"""
+    def __init__(self, ttl=5.0):
+        self._lock = threading.Lock()
+        self._ttl = ttl
+        self._loaded_at = 0.0
+        self._dirty = True
+        self._ids, self._names, self._matrix = [], [], None
+
+    def invalidate(self):
+        with self._lock:
+            self._dirty = True
+
+    def get(self):
+        now = time.time()
+        with self._lock:
+            if self._dirty or (now - self._loaded_at) > self._ttl:
+                self._reload()
+                self._loaded_at = now
+                self._dirty = False
+            return self._ids, self._names, self._matrix
+
+    def _reload(self):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT member_id, name, face_embedding FROM members WHERE face_embedding IS NOT NULL"
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"⚠️ 会員顔データの読み込みに失敗（前回のキャッシュを継続使用）: {e}")
+            return
+        ids, names, vecs, dim = [], [], [], None
+        for r in rows:
+            v = np.frombuffer(r["face_embedding"], dtype=np.float32)
+            n = np.linalg.norm(v)
+            if n == 0:
+                continue
+            if dim is None:
+                dim = v.shape[0]
+            if v.shape[0] != dim:
+                continue
+            ids.append(r["member_id"])
+            names.append(r["name"])
+            vecs.append(v / n)   # 正規化済みで保持 → 内積がそのままコサイン類似度
+        self._ids, self._names = ids, names
+        self._matrix = np.stack(vecs) if vecs else None
+
+member_cache = MemberFaceCache()
+
+def get_box_color_feature(frame, box):
+    x1, y1, x2, y2 = map(int, box)
+    h_img, w_img, _ = frame.shape
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w_img, x2), min(h_img, y2)
+    if x2 <= x1 or y2 <= y1:
+        return np.zeros(3, dtype=float)
+    
+    chest_y1 = y1 + int((y2 - y1) * 0.2)
+    chest_y2 = y1 + int((y2 - y1) * 0.7)
+    if chest_y2 <= chest_y1:
+        chest_y1, chest_y2 = y1, y2
+        
+    roi = frame[chest_y1:chest_y2, x1:x2]
+    if roi.size == 0:
+        return np.zeros(3, dtype=float)
+        
+    mean_color = cv2.mean(roi)[:3]
+    return np.array(mean_color, dtype=float)
+
 def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
-    """入場判定。 (OKかどうか, NGの理由) を返す"""
     if last_scanned_qr == "None":
         return False, "QRが読み取られていません"
     if last_scanned_qr == "Invalid QR":
@@ -363,18 +517,253 @@ def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
         return False, f"顔の類似度が不足（最大{best_sim:.2f} ≤ しきい値{FACE_MATCH_THRESHOLD}）"
     return True, ""
 
-def is_person_sitting(p_box, seat_boxes):
-    """人の下半身（ボックスの下半分）が椅子/ベンチのボックスと十分重なっていれば「座っている」とみなす"""
+def sit_overlap_ratio(p_box, seat_boxes):
     px1, py1, px2, py2 = p_box
     mid_y = py1 + (py2 - py1) * 0.5
     lower_area = max(1.0, (px2 - px1) * (py2 - mid_y))
+    best = 0.0
     for sx1, sy1, sx2, sy2 in seat_boxes:
         ix1, iy1 = max(px1, sx1), max(mid_y, sy1)
         ix2, iy2 = min(px2, sx2), min(py2, sy2)
         inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-        if inter / lower_area >= SIT_OVERLAP_RATIO:
-            return True
-    return False
+        best = max(best, inter / lower_area)
+    return best
+
+class SitConfirmer:
+    def __init__(self):
+        self.since = None
+        self.last_seen = 0.0
+        self.had_gap = False   # 前回「座っている」と判定したあと、「座っていない」判定のフレームが挟まったか
+
+    def update(self, sitting_now, now):
+        if not sitting_now:
+            self.had_gap = True
+            return False, self.since
+        # 途切れとみなすのは、「座っていない」フレームが挟まり、かつ SIT_BREAK_TOLERANCE を超えて空いたときだけ。
+        # （座っている判定が連続しているのに、1フレームの処理が遅いだけでタイマーが巻き戻らないようにする）
+        if self.since is None or (self.had_gap and (now - self.last_seen) > SIT_BREAK_TOLERANCE):
+            self.since = now
+        self.had_gap = False
+        self.last_seen = now
+        return (now - self.since) >= SIT_CONFIRM_SECONDS, self.since
+
+class IdentityHolder:
+    def __init__(self):
+        self.name = None
+        self.member_id = None
+        self.time = 0.0
+        self.estimated = False   # True: 顔ではなく服装から推定した本人
+
+    def has_identity(self, now):
+        """直前に特定した会員を、いま保持しているか"""
+        return self.name is not None and (now - self.time) <= IDENTITY_HOLD_SECONDS
+
+    def update(self, recognized_name, recognized_id, is_sitting, now, estimated=False):
+        """戻り値: (名前, 会員ID, 保持中か, 服装による推定か)"""
+        if recognized_name != "Guest":
+            self.name, self.member_id, self.time, self.estimated = recognized_name, recognized_id, now, estimated
+            return recognized_name, recognized_id, False, estimated
+        if self.has_identity(now):
+            if is_sitting:
+                self.time = now
+            return self.name, self.member_id, True, self.estimated
+        self.name, self.member_id, self.estimated = None, None, False
+        return "Guest", None, False, False
+
+def _box_inter(a, b):
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+def _box_area(a):
+    return max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+
+def update_seat_memory(memory, detected, person_boxes, now):
+    for m in memory:
+        m["live"] = False
+    used = set()
+    for m in memory:
+        occluded = any(_box_inter(p, m["box"]) / _box_area(m["box"]) >= SEAT_OCCLUDED_RATIO for p in person_boxes)
+        best_j, best_score = None, 0.0
+        for j, d in enumerate(detected):
+            if j in used:
+                continue
+            inter = _box_inter(m["box"], d)
+            iou = inter / (_box_area(m["box"]) + _box_area(d) - inter)
+            contained = inter / _box_area(d)
+            score = max(iou, contained if contained >= 0.7 else 0.0)
+            if score >= 0.3 and score > best_score:
+                best_j, best_score = j, score
+        if best_j is not None:
+            used.add(best_j)
+            m["live"] = True
+            m["last_seen"] = now
+            if not occluded:
+                m["box"] = detected[best_j]
+        elif occluded:
+            m["last_seen"] = now
+    for j, d in enumerate(detected):
+        if j not in used:
+            memory.append({"box": d, "last_seen": now, "live": True})
+    memory[:] = [m for m in memory if now - m["last_seen"] <= SEAT_MEMORY_SECONDS]
+    return [m["box"] for m in memory]
+
+def _visible_mean(kxy, kconf, idxs):
+    pts = [kxy[i] for i in idxs if kconf[i] >= KP_CONF and (kxy[i][0] > 0 or kxy[i][1] > 0)]
+    if not pts:
+        return None
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+def _hip_on_seat(hip, seat, margin=None):
+    sx1, sy1, sx2, sy2 = seat
+    margin = HIP_SEAT_MARGIN if margin is None else margin
+    top = sy1 - margin * (sy2 - sy1)
+    return sx1 <= hip[0] <= sx2 and top <= hip[1] <= sy2
+
+def evaluate_sitting(box, kxy, kconf, seat_boxes):
+    overlap = sit_overlap_ratio(box, seat_boxes) if seat_boxes else 0.0
+    if overlap < SIT_OVERLAP_RATIO:
+        return False, overlap, "overlap"
+
+    hip = _visible_mean(kxy, kconf, (11, 12))
+    shoulder = _visible_mean(kxy, kconf, (5, 6))
+    if hip is not None:
+        if not any(_hip_on_seat(hip, s) for s in seat_boxes):
+            return False, overlap, "hip-outside"
+        knee = _visible_mean(kxy, kconf, (13, 14))
+        if knee is not None:
+            torso = (hip[1] - shoulder[1]) if shoulder is not None else (box[3] - box[1]) * 0.3
+            torso = max(torso, 1.0)
+            drop = (knee[1] - hip[1]) / torso
+            if drop >= SIT_THIGH_DROP_RATIO:
+                return False, overlap, f"standing-legs(drop={drop:.2f})"
+            return True, overlap, f"pose(drop={drop:.2f})"
+        # 膝が見えない（近くに立って足が画面外、など）：脚で確かめられないので、腰の高さで確かめる。
+        # 座っていれば腰は椅子の中ほど、立っていれば椅子ボックスの上端付近になる。
+        if not any(_hip_on_seat(hip, s, margin=-HIP_SEAT_MIN_DEPTH_NOKNEE) for s in seat_boxes):
+            return False, overlap, "hip-shallow(no-knee)"
+        return True, overlap, "pose(no-knee)"
+
+    # 腰が見えない（上半身のみ）：肩が椅子に対して高すぎれば立っているとみなす
+    if shoulder is not None and not any(
+            shoulder[1] >= s[1] - SHOULDER_ABOVE_SEAT_MAX * (s[3] - s[1]) for s in seat_boxes):
+        return False, overlap, "standing-high(no-hip)"
+    h, w = box[3] - box[1], max(box[2] - box[0], 1.0)
+    if h / w >= STANDING_ASPECT_RATIO:
+        return False, overlap, "standing-aspect"
+    return True, overlap, f"box(h/w={h / w:.1f})"
+
+# =========================================================================
+# 🚪 入口の認証セッション（QR → 顔の一致 → 線の通過 を1人分まとめて管理）
+# =========================================================================
+class EntranceSession:
+    """QRを読んだ会員1人分の状態を管理する（入口モード用）。
+
+    ・会員の顔と一致した時点で「顔認証OK」にする（線をまたぐ瞬間を待たない）。
+    ・認証後は、顔 → 追跡ID → 直前の位置に近い枠 の順で本人を探し直す。
+      そのため、処理が遅れて枠のIDが付け替わっても本人を見失いにくい。
+    ・線の手前（左）にいた本人が、線から一定距離だけ向こう側（右）で見つかった時点で通過（入館）とする。
+      線をまたいだ瞬間のフレームは必要ない。"""
+
+    def __init__(self, member_id, label, embedding):
+        self.member_id = member_id
+        self.label = label
+        self.embedding = embedding
+        self.authed = False
+        self.auth_time = None
+        self.match_sim = 0.0         # 会員と一致した顔の最大類似度
+        self.best_sim_seen = None    # QR読み取り後に見えた全ての顔の最大類似度（不一致の診断用）
+        self.track_id = None
+        self.pos = None              # 本人を最後に確認した位置 (x, y)
+        self.last_box = None
+        self.last_seen = None
+        self.armed = False           # 線の手前（左）にいたことを確認済みか
+        self.done = False
+        self.last_face_sims = []     # [(face, 会員との類似度)] 描画用
+
+    @staticmethod
+    def _center(box):
+        return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+    def _has_other_face(self, box):
+        """この枠の中に、会員とは明らかに別人の顔があるか。"""
+        for face, sim in self.last_face_sims:
+            fx, fy = self._center(face.bbox)
+            if box[0] <= fx <= box[2] and box[1] <= fy <= box[3] and sim < ENTRANCE_OTHER_FACE_SIM:
+                return True
+        return False
+
+    def update(self, now, qr_time, tracked, faces):
+        """1フレーム分の更新。tracked は [(track_id, box), ...]。
+        戻り値: None / "authed"（顔認証OK）/ "crossed"（通過=入館）/ "expired"（時間切れ）"""
+        if self.done:
+            return None
+        if now - qr_time > CO_TRAILING_WINDOW:
+            self.done = True
+            return "expired"
+
+        # 1) 会員の顔と似ている顔を探す
+        self.last_face_sims = []
+        face_hit = None
+        for face in faces:
+            sim = cosine_sim(self.embedding, face.embedding)
+            self.last_face_sims.append((face, sim))
+            if self.best_sim_seen is None or sim > self.best_sim_seen:
+                self.best_sim_seen = sim
+            if sim > FACE_MATCH_THRESHOLD and (face_hit is None or sim > face_hit[2]):
+                fc = self._center(face.bbox)
+                face_hit = (fc[0], fc[1], sim)
+
+        # 2) 本人の位置を決める
+        pos = box = tid = None
+        if face_hit is not None:
+            fx, fy, sim = face_hit
+            self.match_sim = max(self.match_sim, sim)
+            for t, b in tracked:
+                if b[0] <= fx <= b[2] and b[1] <= fy <= b[3]:
+                    box, tid = b, t
+                    break
+            pos = self._center(box) if box is not None else (fx, fy)   # 枠が無くても顔の位置を使う
+        elif self.authed:
+            # 顔が見えないとき：同じ追跡IDの枠 → なければ直前の位置に近い枠
+            for t, b in tracked:
+                if t == self.track_id:
+                    box, tid = b, t
+                    break
+            if box is None and self.pos is not None and now - self.last_seen <= ENTRANCE_REASSOC_SECONDS:
+                allowed = ENTRANCE_REASSOC_BASE_PX + ENTRANCE_REASSOC_PX_PER_SEC * (now - self.last_seen)
+                best_d = None
+                for t, b in tracked:
+                    c = self._center(b)
+                    d = float(np.hypot(c[0] - self.pos[0], c[1] - self.pos[1]))
+                    if d > allowed or (best_d is not None and d >= best_d) or self._has_other_face(b):
+                        continue
+                    box, tid, best_d = b, t, d
+            if box is not None:
+                pos = self._center(box)
+
+        if pos is not None:
+            self.pos, self.last_seen = pos, now
+            if box is not None:
+                self.last_box = box
+            if tid is not None:
+                self.track_id = tid
+
+        # 3) 顔認証
+        event = None
+        if not self.authed:
+            if face_hit is None:
+                return None
+            self.authed = True
+            self.auth_time = now
+            event = "authed"
+
+        # 4) 通過の判定（線の手前にいた本人が、向こう側で見つかったら通過）
+        if pos is not None:
+            if pos[0] < LINE_X:
+                self.armed = True
+            elif self.armed and pos[0] >= LINE_X + ENTRANCE_CROSS_MARGIN_PX:
+                self.done = True
+                return "crossed"
+        return event
 
 # =========================================================================
 # 🎥 カメラ処理ループ
@@ -385,198 +774,379 @@ def camera_processing_loop():
     from insightface.app import FaceAnalysis
 
     yolo_model = YOLO("yolo11n.pt")
-    # ルームモード専用（.track() を一度も呼ばない＝トラッカーが付かないモデル）
     room_model = YOLO(ROOM_MODEL_PATH)
+    pose_model = YOLO(POSE_MODEL_PATH)
     
     print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-    face_app.prepare(ctx_id=0, det_size=(640, 640))
+    face_app.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
 
-    cap = cv2.VideoCapture(CAMERA_ID)
-    if not cap.isOpened():
-        print("❌ エラー: カメラを開けませんでした。")
-        return
+    cap = open_camera()
+    while not cap.isOpened():
+        print("❌ エラー: カメラを開けませんでした。3秒後に再試行します...")
+        time.sleep(3)
+        cap.release()
+        cap = open_camera()
+    print(f">> カメラ解像度: {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f}"
+          f"（目標 {FRAME_W}x{FRAME_H} / YOLO imgsz={YOLO_IMGSZ} / 顔検出 {FACE_DET_SIZE[0]}x{FACE_DET_SIZE[1]}）")
 
     track_history = {}
-    face_sim_history = {}  # track_id -> {best, time, member_id}
+    face_sim_history = {}
+    last_push_time = 0.0
+    last_err_log = 0.0
+    prev_frame_time = None   # 1フレームの処理時間の計測用（遅いとタイマー系の判定に影響するため画面に出す）
+    loop_dt = 0.0
+    last_slow_log = 0.0
+    last_face_log = 0.0
+    sit_confirmer = SitConfirmer()
+    seat_memory = []
+    identity_holder = IdentityHolder()
+    sit_log = {"key": None, "time": 0.0}
+    entrance_session = None   # 入口：QRを読んだ会員1人分の認証セッション
+    auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}   # 認証NG・失効・入館OKの一時表示
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
 
     while cap.isOpened():
-        current_time = time.time()
-        success, frame = cap.read()
-        if not success:
-            time.sleep(0.03)
-            continue
+        try:
+            current_time = time.time()
+            if prev_frame_time is not None:
+                loop_dt = 0.8 * loop_dt + 0.2 * (current_time - prev_frame_time)
+            prev_frame_time = current_time
+            success, frame = cap.read()
+            if not success:
+                time.sleep(0.03)
+                continue
 
-        frame = cv2.resize(frame, (640, 480))
-        with mode_lock:
-            mode = active_mode
+            if frame.shape[1] != FRAME_W or frame.shape[0] != FRAME_H:
+                frame = cv2.resize(frame, (FRAME_W, FRAME_H))   # カメラが指定解像度に非対応のときの保険
+            with mode_lock:
+                mode = active_mode
+            if mode != "entrance":
+                entrance_session = None
 
-        if mode == "entrance":
-            qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
-            if qr_bbox is not None and len(qr_bbox) > 0:
-                pts = qr_bbox[0].astype(int)
-                for i in range(4):
-                    cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), 2)
-                if qr_data:
-                    if state.should_process_qr(qr_data, current_time):
-                        state.process_qr(qr_data, current_time)
+            if mode == "entrance":
+                qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
+                if qr_bbox is not None and len(qr_bbox) > 0:
+                    pts = qr_bbox[0].astype(int)
+                    for i in range(4):
+                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), THICK)
+                    if qr_data:
+                        if state.should_process_qr(qr_data, current_time):
+                            state.process_qr(qr_data, current_time)
+                            if (state.accepted_token == qr_data and state.last_member_id is not None
+                                    and state.last_member_embedding is not None):
+                                # 有効なQR：この会員の顔認証セッションを開始（顔データ未登録の会員は従来どおり通過時に失敗扱い）
+                                entrance_session = EntranceSession(state.last_member_id, state.last_scanned_qr,
+                                                                   state.last_member_embedding)
+                                auth_banner["until"] = 0.0
+                            elif state.last_scanned_qr == "Invalid QR":
+                                entrance_session = None
 
-            faces = face_app.get(frame)
+                faces = face_app.get(frame)
 
-            yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
-            cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
-            cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                yolo_results = yolo_model.track(frame, persist=True, classes=[0], imgsz=YOLO_IMGSZ, verbose=False)
+                cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_H), (255, 0, 0), THICK)
+                put_text(frame, "GATE LINE", (LINE_X + 10, int(30 * UI)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, hud=False)
 
-            # 古い顔類似度の記録を掃除
-            for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
-                del face_sim_history[tid]
+                for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
+                    del face_sim_history[tid]
 
-            if yolo_results[0].boxes.id is not None:
-                boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
-                track_ids = yolo_results[0].boxes.id.cpu().numpy().astype(int)
+                tracked = []   # [(track_id, box), ...]
+                if yolo_results[0].boxes.id is not None:
+                    tracked = list(zip(yolo_results[0].boxes.id.cpu().numpy().astype(int),
+                                       yolo_results[0].boxes.xyxy.cpu().numpy()))
 
-                for box, track_id in zip(boxes, track_ids):
-                    x_center = int((box[0] + box[2]) / 2)
-                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                # --- 顔認証セッションの更新（顔が会員と一致した時点で認証OK。線を越えた本人を探し直して通過を判定） ---
+                skip_tid = None      # このIDの通過は下の従来判定ではなく、ここで扱う
+                face_sims = []
+                if entrance_session is not None:
+                    sess = entrance_session
+                    ev = sess.update(current_time, state.last_qr_time, tracked, faces)
+                    skip_tid = sess.track_id
+                    face_sims = sess.last_face_sims
+                    member_name = sess.label.split(" (")[0] if " (" in sess.label else sess.label
+                    if ev == "authed":
+                        print(f"✅ 【顔認証OK】 {sess.label}（類似度 {sess.match_sim:.2f}）… このまま線を越えると入館になります")
+                    elif ev == "crossed":
+                        print(f"{member_name}：認証成功（類似度: {sess.match_sim:.2f}）… 顔認証後に線の向こう側で確認")
+                        state.register_pass("IN", sess.label, 0,
+                                            note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
+                        if sess.last_box is not None:
+                            state.add_recent_entry(sess.member_id, member_name,
+                                                   get_box_color_feature(frame, sess.last_box), current_time)
+                        auth_banner.update(text=f"IN OK: {sess.member_id}", color=(0, 255, 0),
+                                           until=current_time + ENTRANCE_BANNER_SECONDS)
+                    elif ev == "expired":
+                        if sess.authed:
+                            print(f"⌛ 【認証失効】 {sess.label}：顔認証後、{CO_TRAILING_WINDOW:.0f}秒以内に線を越えなかったため失効しました")
+                            auth_banner.update(text=f"AUTH EXPIRED: {sess.member_id}", color=(0, 165, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                        elif sess.best_sim_seen is not None:
+                            print(f"❌ 【顔認証NG】 {sess.label}：QRと顔が一致しませんでした（最大類似度 {sess.best_sim_seen:.2f} ≤ しきい値 {FACE_MATCH_THRESHOLD}）")
+                            state.set_alert(True)
+                            auth_banner.update(text=f"AUTH NG (face mismatch): {sess.member_id}", color=(0, 0, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                        else:
+                            print(f"⌛ 【顔認証タイムアウト】 {sess.label}：{CO_TRAILING_WINDOW:.0f}秒以内に顔が見つかりませんでした")
+                            auth_banner.update(text=f"AUTH TIMEOUT (no face): {sess.member_id}", color=(0, 165, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                    if sess.done:
+                        entrance_session = None
 
-                    # QR認証済み会員の顔との類似度を毎フレーム計算し、直近(FACE_TIMEOUT秒)の最大値を保持
-                    if state.last_member_embedding is not None:
-                        for face in faces:
-                            fcx = (face.bbox[0] + face.bbox[2]) / 2
-                            fcy = (face.bbox[1] + face.bbox[3]) / 2
-                            if box[0] <= fcx <= box[2] and box[1] <= fcy <= box[3]:
-                                sim = cosine_sim(state.last_member_embedding, face.embedding)
+                # 顔の枠（会員と一致した顔=黄、それ以外=灰）。認証セッション中は類似度も表示する
+                sim_by_face = {id(f): sv for f, sv in face_sims}
+                for face in faces:
+                    fsim = sim_by_face.get(id(face))
+                    matched = fsim is not None and fsim > FACE_MATCH_THRESHOLD
+                    fb = face.bbox.astype(int)
+                    cv2.rectangle(frame, (int(fb[0]), int(fb[1])), (int(fb[2]), int(fb[3])),
+                                  (0, 255, 255) if matched else (160, 160, 160), 2)
+                    if fsim is not None:
+                        put_text(frame, f"face:{fsim:.2f}", (int(fb[0]), max(int(15 * UI), int(fb[1]) - int(8 * UI))),
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255) if matched else (200, 200, 200), 1, hud=False)
+
+                if yolo_results[0].boxes.id is not None:
+                    boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
+                    track_ids = yolo_results[0].boxes.id.cpu().numpy().astype(int)
+
+                    for box, track_id in zip(boxes, track_ids):
+                        x_center = int((box[0] + box[2]) / 2)
+                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), THICK)
+                        put_text(frame, f"ID:{track_id}", (int(box[0]), int(box[3]) + int(18 * UI)),
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, hud=False)
+
+                        if state.last_member_embedding is not None:
+                            for face in faces:
+                                fcx = (face.bbox[0] + face.bbox[2]) / 2
+                                fcy = (face.bbox[1] + face.bbox[3]) / 2
+                                if box[0] <= fcx <= box[2] and box[1] <= fcy <= box[3]:
+                                    sim = cosine_sim(state.last_member_embedding, face.embedding)
+                                    rec = face_sim_history.get(track_id)
+                                    if (rec is None or rec["member_id"] != state.last_member_id
+                                            or current_time - rec["time"] > FACE_TIMEOUT):
+                                        face_sim_history[track_id] = {"best": sim, "time": current_time, "member_id": state.last_member_id}
+                                    elif sim > rec["best"]:
+                                        rec["best"] = sim
+                                        rec["time"] = current_time
+
+                        rec = face_sim_history.get(track_id)
+                        if rec is not None and current_time - rec["time"] <= FACE_TIMEOUT:
+                            put_text(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(int(15 * UI), int(box[1]) - int(8 * UI))),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, hud=False)
+
+                        if track_id in track_history:
+                            prev_x = track_history[track_id]
+                            if skip_tid is not None and track_id == skip_tid and prev_x < LINE_X and x_center >= LINE_X:
+                                pass   # 認証セッションの本人の通過は、上の判定（線の向こう側で本人を確認）で扱う
+                            elif prev_x < LINE_X and x_center >= LINE_X:
+                                time_since_qr = current_time - state.last_qr_time
                                 rec = face_sim_history.get(track_id)
-                                if (rec is None or rec["member_id"] != state.last_member_id
-                                        or current_time - rec["time"] > FACE_TIMEOUT):
-                                    face_sim_history[track_id] = {"best": sim, "time": current_time, "member_id": state.last_member_id}
-                                elif sim > rec["best"]:
-                                    rec["best"] = sim
-                                    rec["time"] = current_time
+                                best_sim = None
+                                if (rec is not None and rec["member_id"] == state.last_member_id
+                                        and current_time - rec["time"] <= FACE_TIMEOUT):
+                                    best_sim = rec["best"]
 
-                    rec = face_sim_history.get(track_id)
-                    if rec is not None and current_time - rec["time"] <= FACE_TIMEOUT:
-                        cv2.putText(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(15, int(box[1]) - 8)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                                ok, reason = judge_entry(
+                                    time_since_qr, state.last_scanned_qr,
+                                    state.last_member_embedding is not None, best_sim
+                                )
+                                # 💡 【修正ポイント1】 インデントを正しく分離
+                                if ok:
+                                    member_name = state.last_scanned_qr.split(" (")[0] if " (" in state.last_scanned_qr else state.last_scanned_qr
+                                    print(f"{member_name}：認証成功（類似度: {best_sim:.2f}）")
+                                    state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
+                                    color_feat = get_box_color_feature(frame, box)
+                                    state.add_recent_entry(state.last_member_id, member_name, color_feat, current_time)
+                                else:
+                                    print(f"未登録または別人：認証失敗（理由: {reason}）")
+                                    state.set_alert(True)
+                                    state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
+                            elif prev_x > LINE_X and x_center <= LINE_X:
+                                state.register_pass("OUT", "Unknown", 0)
+                                state.set_alert(False)
 
-                    if track_id in track_history:
-                        prev_x = track_history[track_id]
-                        if prev_x < LINE_X and x_center >= LINE_X:
-                            time_since_qr = current_time - state.last_qr_time
-                            rec = face_sim_history.get(track_id)
-                            best_sim = None
-                            if (rec is not None and rec["member_id"] == state.last_member_id
-                                    and current_time - rec["time"] <= FACE_TIMEOUT):
-                                best_sim = rec["best"]
+                        track_history[track_id] = x_center
 
-                            ok, reason = judge_entry(
-                                time_since_qr, state.last_scanned_qr,
-                                state.last_member_embedding is not None, best_sim
-                            )
-                            if ok:
-                                print(f"✅ 【入場OK】 {state.last_scanned_qr} / 顔の類似度 {best_sim:.2f}")
-                                state.register_pass("IN", state.last_scanned_qr, 0)
-
-                                upper_c, lower_c, aspect = extract_appearance_features(frame, box)
-                                state.last_member_appearance = {
-                                    "upper_color": upper_c,
-                                    "lower_color": lower_c,
-                                    "aspect_ratio": aspect
-                                }
-                            else:
-                                print(f"🚨 【入場警告】 {reason}")
-                                state.set_alert(True)
-                                state.register_pass("IN", "Unknown / Face Mismatch", 1)
-                        elif prev_x > LINE_X and x_center <= LINE_X:
-                            state.register_pass("OUT", "Unknown", 0)
-                            state.set_alert(False)
-
-                    track_history[track_id] = x_center
-
-            cv2.putText(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-            cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-        else:
-            # ＝ トレーニングルームモード（椅子検知 ＋ 座り判定）＝
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT member_id, name, face_embedding FROM members WHERE face_embedding IS NOT NULL")
-            registered_members = cursor.fetchall()
-            conn.close()
-
-            faces = face_app.get(frame)
-            detected_user_name = "Guest"
-
-            # 1. 顔による1:Nマッチング
-            for face in faces:
-                highest_sim = 0.0
-                best_match_name = "Guest"
-
-                for member in registered_members:
-                    db_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
-                    sim = np.dot(db_embedding, face.embedding) / (np.linalg.norm(db_embedding) * np.linalg.norm(face.embedding))
-                    if sim > highest_sim:
-                        highest_sim = sim
-                        best_match_name = member['name']
-
-                if highest_sim > FACE_MATCH_THRESHOLD:
-                    detected_user_name = best_match_name
-                    break
-
-            # 2. 人・椅子を検出（ルーム専用モデルで、1フレーム1回だけ推論）
-            person_boxes = []
-            seat_boxes = []
-            det = room_model(frame, classes=[0] + SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
-            if det.boxes is not None and len(det.boxes) > 0:
-                for b, c in zip(det.boxes.xyxy.cpu().numpy(), det.boxes.cls.cpu().numpy().astype(int)):
-                    if c == 0:
-                        person_boxes.append(b)
+                put_text(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                if entrance_session is not None:
+                    remain = max(0.0, CO_TRAILING_WINDOW - (current_time - state.last_qr_time))
+                    if entrance_session.authed:
+                        put_text(frame, f"AUTH OK: {entrance_session.member_id} sim={entrance_session.match_sim:.2f} "
+                                        f"-> go through ({remain:.0f}s)", (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     else:
-                        seat_boxes.append(b)
+                        put_text(frame, f"QR OK: {entrance_session.member_id} - show your face ({remain:.0f}s)",
+                                 (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                elif current_time < auth_banner["until"]:
+                    put_text(frame, auth_banner["text"], (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_banner["color"], 2)
 
-            # 3. 顔で見つからない場合、服装（Re-ID）で判定
-            if detected_user_name == "Guest" and state.last_scanned_qr not in ("None", "Invalid QR"):
-                last_app = state.last_member_appearance
-                if last_app["upper_color"] is not None:
-                    for box in person_boxes:
-                        u_col, _, _ = extract_appearance_features(frame, box)
-                        if u_col is not None and np.linalg.norm(last_app["upper_color"] - u_col) < 50.0:
-                            detected_user_name = state.last_scanned_qr.split(" (")[0]
-                            break
-
-            # 座り判定（人の下半身と椅子/ベンチの重なり）
-            is_sitting = any(is_person_sitting(p, seat_boxes) for p in person_boxes)
-            active_machine_key = "bench_press"  # デフォルトのマシン
-
-            # デバッグ表示：人=緑、椅子/ベンチ=オレンジ
-            for b in person_boxes:
-                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 255, 0), 2)
-            for b in seat_boxes:
-                cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (0, 165, 255), 2)
-            cv2.putText(frame, f"persons={len(person_boxes)} seats={len(seat_boxes)}", (20, 100),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-            # 5. 会員が検知されており、かつ「椅子に座っている」と判定されたときだけタイマー開始
-            if detected_user_name != "Guest" and is_sitting:
-                state.update_machine_occupancy(active_machine_key, detected_user_name, current_time)
-                cv2.putText(frame, f"Sitting & Using: {detected_user_name}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             else:
-                status_text = f"User: {detected_user_name} | Sitting: {is_sitting}"
-                cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+                # ＝ トレーニングルームモード（椅子検知 ＋ 座り判定）＝
+                member_ids, member_names, member_matrix = member_cache.get()
 
-            state.release_idle_machines(current_time)
-            state.push_update()
-            cv2.putText(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                faces = face_app.get(frame)
+                detected_user_name = "Guest"
+                detected_member_id = None
+                matched_face_center = None
+                best_face_sim = None   # 今のフレームで見えた顔のうち、会員との最高類似度（診断表示用）
+                face_note = "no-face" if len(faces) == 0 else ("no-members" if member_matrix is None else "no-match")
 
-        with render_lock:
-            current_output_frame = frame.copy()
+                # 1. 顔による1:Nマッチング（キャッシュ済みの正規化行列との内積で一括計算）
+                for face in faces:
+                    if member_matrix is None:
+                        break
+                    fe = np.asarray(face.embedding, dtype=np.float32)
+                    fn = np.linalg.norm(fe)
+                    if fn == 0 or fe.shape[0] != member_matrix.shape[1]:
+                        continue
+                    sims = member_matrix @ (fe / fn)
+                    best_idx = int(np.argmax(sims))
+                    sim_val = float(sims[best_idx])
+                    if best_face_sim is None or sim_val > best_face_sim:
+                        best_face_sim = sim_val
+                    if sim_val > ROOM_FACE_THRESHOLD:
+                        face_note = "matched"
+                        detected_user_name = member_names[best_idx]
+                        detected_member_id = member_ids[best_idx]   # 【バグ修正】一致した会員のIDを使う
+                        matched_face_center = ((face.bbox[0] + face.bbox[2]) / 2, (face.bbox[1] + face.bbox[3]) / 2)
+                        break
 
-        time.sleep(0.01)
+                # 2. 椅子と人（骨格つき）を検出
+                detected_seats = []
+                seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, imgsz=YOLO_IMGSZ, verbose=False)[0]
+                if seat_det.boxes is not None and len(seat_det.boxes) > 0:
+                    detected_seats = list(seat_det.boxes.xyxy.cpu().numpy())
 
+                persons = []
+                pose_det = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
+                if pose_det.boxes is not None and len(pose_det.boxes) > 0 and pose_det.keypoints is not None:
+                    p_boxes = pose_det.boxes.xyxy.cpu().numpy()
+                    kxy_all = pose_det.keypoints.xy.cpu().numpy()
+                    kcf_all = (pose_det.keypoints.conf.cpu().numpy() if pose_det.keypoints.conf is not None
+                               else np.ones(kxy_all.shape[:2]))
+                    persons = [(p_boxes[i], kxy_all[i], kcf_all[i]) for i in range(len(p_boxes))]
+                person_boxes = [p[0] for p in persons]
+
+                seat_boxes = update_seat_memory(seat_memory, detected_seats, person_boxes, current_time)
+
+                # 座り判定
+                best = (False, -1.0, "no-person")
+                sit_box = None
+                for box, kxy_i, kcf_i in persons:
+                    res = evaluate_sitting(box, kxy_i, kcf_i, seat_boxes)
+                    if (res[0], res[1]) > (best[0], best[1]):
+                        best = res
+                        sit_box = box
+                is_sitting, overlap, why = best
+                active_machine_key = "bench_press"
+
+                # 顔認識で特定した人が椅子の範囲にいるかチェック
+                if detected_user_name != "Guest":
+                    seat_h = (sit_box[3] - sit_box[1]) if sit_box is not None else 0
+                    inside = (matched_face_center is not None
+                              and sit_box is not None
+                              and sit_box[0] <= matched_face_center[0] <= sit_box[2]
+                              and (sit_box[1] - seat_h) <= matched_face_center[1] <= sit_box[3])
+                    if sit_box is not None and not inside:
+                        detected_user_name, detected_member_id = "Guest", None
+                        face_note = "matched-but-outside-seat"
+
+                # 服装による補助判定：顔で一度も特定できていない（保持中の本人もいない）座っている人にだけ使う。
+                # 一度決まれば IdentityHolder が保持するので、毎フレーム選び直さない。
+                estimated_by_clothes = False
+                if (detected_user_name == "Guest" and is_sitting and sit_box is not None
+                        and not identity_holder.has_identity(current_time)):
+                    fb_name, fb_id = state.match_recent_entry_by_feature(sit_box, frame, current_time)
+                    if fb_name is not None:
+                        detected_user_name = fb_name
+                        detected_member_id = fb_id
+                        estimated_by_clothes = True
+                        print(f"👕 【服装から推定】 顔が見えないため入口の服装記録から {fb_name} と推定しました")
+
+                # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
+                for box, kxy_i, kcf_i in persons:
+                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), THICK)
+                    for idx in (11, 12, 13, 14):
+                        if kcf_i[idx] >= KP_CONF:
+                            cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), int(4 * UI), (0, 0, 255), -1)
+                for m in seat_memory:
+                    b = m["box"]
+                    color = (0, 165, 255) if m["live"] else (0, 255, 255)
+                    cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, THICK)
+                n_live = sum(1 for m in seat_memory if m["live"])
+                put_text(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
+                                   f"overlap={max(overlap, 0.0):.2f} why={why}",
+                            (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+                log_key = (is_sitting, why.split("(")[0])
+                if log_key != sit_log["key"] and current_time - sit_log["time"] >= 1.0:
+                    print(f"🪑 座り判定: {is_sitting} (why={why}, overlap={max(overlap, 0.0):.2f}, "
+                          f"persons={len(persons)}, seats={n_live}+{len(seat_memory) - n_live}記憶)")
+                    sit_log["key"], sit_log["time"] = log_key, current_time
+
+                # 顔認識が外れても、直前に特定した会員を保持（IdentityHolder）
+                detected_user_name, detected_member_id, identity_held, identity_estimated = identity_holder.update(
+                    detected_user_name, detected_member_id, is_sitting, current_time,
+                    estimated=estimated_by_clothes)
+                held_mark = " (estimated)" if identity_estimated else (" (face lost)" if identity_held else "")
+
+                # --- 診断表示: 顔判定のどこで止まっているか／誰として扱っているか／1フレームの処理時間 ---
+                if detected_user_name == "Guest":
+                    id_source = "none"
+                elif identity_estimated:
+                    id_source = "clothes"
+                elif identity_held:
+                    id_source = "held"
+                else:
+                    id_source = "face"
+                sim_txt = f"{best_face_sim:.2f}" if best_face_sim is not None else "-"
+                put_text(frame, f"face={face_note} faces={len(faces)} best={sim_txt}/{ROOM_FACE_THRESHOLD:.2f} "
+                                   f"id={id_source} loop={loop_dt:.2f}s",
+                            (20, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                if is_sitting and current_time - last_face_log >= 3.0:
+                    print(f"👤 顔判定: {face_note} / 顔の数={len(faces)} / 最高類似度={sim_txt}（閾値 {ROOM_FACE_THRESHOLD:.2f}）"
+                          f" / 識別元={id_source} / 1フレーム={loop_dt:.2f}秒")
+                    last_face_log = current_time
+                if loop_dt > SIT_BREAK_TOLERANCE and current_time - last_slow_log >= 10.0:
+                    print(f"⚠️ 1フレームの処理に約{loop_dt:.1f}秒かかっています（顔認識＋椅子検出＋骨格推定をCPUで実行中）。"
+                          f"座り判定の反応が遅れる原因になります。")
+                    last_slow_log = current_time
+
+                # 会員が検知され、座っている状態が SIT_CONFIRM_SECONDS 続いたときだけタイマー開始
+                sitting_now = detected_user_name != "Guest" and is_sitting
+                confirmed, sit_since = sit_confirmer.update(sitting_now, current_time)
+                if confirmed:
+                    state.update_machine_occupancy(active_machine_key, detected_user_name, current_time,
+                                                   started_at=sit_since, member_id=detected_member_id)
+                    put_text(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                elif sitting_now:
+                    put_text(frame, f"Sitting? confirming [{detected_member_id or '-'}]{held_mark} "
+                                       f"{current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
+                                (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                else:
+                    status_text = f"User: {detected_user_name}{held_mark} | Sitting: {is_sitting}"
+                    put_text(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
+                state.release_idle_machines(current_time)
+                if current_time - last_push_time >= ROOM_PUSH_INTERVAL:
+                    state.push_update()
+                    last_push_time = current_time
+                put_text(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+            with render_lock:
+                current_output_frame = frame.copy()
+
+            time.sleep(0.01)
+
+        except Exception as e:
+            # 1フレームの失敗でスレッドが死なないようにする（ログは5秒に1回まで）
+            if time.time() - last_err_log > 5.0:
+                print(f"⚠️ カメラ処理でエラー（処理は継続します）: {e}")
+                traceback.print_exc()
+                last_err_log = time.time()
+            time.sleep(0.1)
     cap.release()
 
 def console_switcher_thread():
@@ -607,6 +1177,10 @@ def get_register_page(request: Request):
 @app.post("/api/register")
 def api_register(data: RegisterRequest):
     try:
+        email = unicodedata.normalize("NFKC", data.email).strip()
+        if not email.isascii() or "@" not in email:
+            return {"status": "error", "message": "メールアドレスは半角英数字で入力してください。"}
+
         header, encoded = data.image.split(",", 1)
         image_bytes = base64.b64decode(encoded)
         np_arr = np.frombuffer(image_bytes, np.uint8)
@@ -614,7 +1188,7 @@ def api_register(data: RegisterRequest):
 
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-        face_app.prepare(ctx_id=0, det_size=(640, 640))
+        face_app.prepare(ctx_id=0, det_size=(1280, 1280))
         faces = face_app.get(frame)
 
         if len(faces) == 0:
@@ -624,15 +1198,6 @@ def api_register(data: RegisterRequest):
 
         member_id = "mem_" + uuid.uuid4().hex[:8]
         qr_token = "token_" + uuid.uuid4().hex
-
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (?, ?, ?, ?, ?)",
-            (member_id, data.name, data.email, qr_token, sqlite3.Binary(face_embedding))
-        )
-        conn.commit()
-        conn.close()
 
         import qrcode
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -647,7 +1212,7 @@ def api_register(data: RegisterRequest):
         msg = MIMEMultipart()
         msg['Subject'] = '【ジムセキュリティ】会員登録完了と専用QRコードのお知らせ'
         msg['From'] = SENDER_EMAIL
-        msg['To'] = data.email
+        msg['To'] = email
 
         body = MIMEText(f"{data.name} 様\n\nジムの新規ご登録ありがとうございます。\nあなた専用の入館用QRコードを発行いたしました。")
         msg.attach(body)
@@ -658,12 +1223,24 @@ def api_register(data: RegisterRequest):
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, data.email, msg.as_string())
+            server.sendmail(SENDER_EMAIL, email, msg.as_string())
+
+        # メール送信に成功してから会員を登録する（失敗時に「登録済みなのにQRが届かない」状態を防ぐ）
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (?, ?, ?, ?, ?)",
+            (member_id, data.name, email, qr_token, sqlite3.Binary(face_embedding))
+        )
+        conn.commit()
+        conn.close()
+        member_cache.invalidate()
 
         return {"status": "success", "member_id": member_id}
 
     except Exception as e:
         print(f"登録エラー: {e}")
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
 @app.get("/video")
@@ -673,7 +1250,7 @@ async def video_feed():
             with render_lock:
                 frame_to_send = current_output_frame
             if frame_to_send is not None:
-                ret, buffer = cv2.imencode('.jpg', frame_to_send)
+                ret, buffer = cv2.imencode('.jpg', frame_to_send, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
                 if ret:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
@@ -695,40 +1272,42 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_websockets.append(websocket)
     try:
+        # 接続直後に最新の状態を配信キューへ入れる（次のイベントを待たずに画面が埋まる）。
+        # 通常の更新と同じキューを通すので、古いデータが後から届いて上書きすることもない。
+        await asyncio.to_thread(state.push_update)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
         if websocket in connected_websockets:
             connected_websockets.remove(websocket)
 
 async def ws_broadcast_loop():
     while True:
-        while not state.update_queue.empty():
-            data = state.update_queue.get()
-            for ws in connected_websockets:
-                try:
-                    await ws.send_text(json.dumps(data))
-                except Exception:
-                    pass
+        try:
+            while not state.update_queue.empty():
+                text = json.dumps(state.update_queue.get())
+                for ws in list(connected_websockets):
+                    try:
+                        await ws.send_text(text)
+                    except Exception:
+                        if ws in connected_websockets:
+                            connected_websockets.remove(ws)
+        except Exception as e:
+            print(f"⚠️ WebSocket配信でエラー（配信は継続します）: {e}")
         await asyncio.sleep(0.1)
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(ws_broadcast_loop())
 
-# ==========================================
-# 🏠 メインダッシュボード（ログイン保護付き）
-# ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def read_index(request: Request):
     if "admin_user" not in request.session:
         return RedirectResponse(url="/admin/login", status_code=303)
-    
     return templates.TemplateResponse(request, "index.html", {})
 
-# ==========================================
-# 🔑 管理者認証・ログイン/ログアウトAPI
-# ==========================================
 @app.post("/api/admin/login")
 def api_admin_login(request: Request, data: AdminAuthRequest):
     conn = sqlite3.connect(DB_PATH)
@@ -748,9 +1327,6 @@ async def admin_logout(request: Request):
     request.session.clear()
     return RedirectResponse(url="/admin/login", status_code=303)
 
-# =========================================================================
-# 👥 管理者用：会員管理・一覧用エンドポイント
-# =========================================================================
 @app.get("/admin/members", response_class=HTMLResponse)
 def get_admin_members_page(request: Request):
     if "admin_user" not in request.session:
@@ -775,32 +1351,225 @@ def api_delete_member(member_id: str):
         cursor.execute("DELETE FROM members WHERE member_id = ?", (member_id,))
         conn.commit()
         conn.close()
+        member_cache.invalidate()
         return {"status": "success", "message": f"会員 {member_id} を削除しました。"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# =========================================================================
-# 📋 管理者用：入退館・違反ログ一覧エンドポイント
-# =========================================================================
+@app.get("/api/admin/members/{member_id}/detail")
+def api_get_member_detail(member_id: str, request: Request):
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
+                   (member_id,))
+    member = cursor.fetchone()
+    if member is None:
+        conn.close()
+        return JSONResponse({"status": "error", "message": "会員が見つかりません。"}, status_code=404)
+
+    escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%({escaped})"
+    visit_where = "direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'"
+    cursor.execute(f"SELECT timestamp FROM passing_logs WHERE {visit_where} ORDER BY id DESC LIMIT 50", (pattern,))
+    visits = [row["timestamp"] for row in cursor.fetchall()]
+    cursor.execute(f"SELECT COUNT(*) AS c, MAX(timestamp) AS last FROM passing_logs WHERE {visit_where}", (pattern,))
+    v = cursor.fetchone()
+
+    cursor.execute("SELECT machine, start_time, end_time, duration FROM occupancy_logs WHERE member_id = ? ORDER BY id DESC LIMIT 50",
+                   (member_id,))
+    usages = []
+    for row in cursor.fetchall():
+        info = MACHINE_LIMITS.get(row["machine"], {})
+        usages.append({
+            "machine": info.get("name", row["machine"] or "-"),
+            "start_time": row["start_time"],
+            "end_time": row["end_time"],
+            "duration": row["duration"],
+            "overtime": bool(info) and (row["duration"] or 0) > info["limit"],
+        })
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = ?", (member_id,))
+    u = cursor.fetchone()
+    conn.close()
+
+    current = None
+    for key, m_state in state.machine_states.items():
+        if m_state.get("member_id") == member_id and m_state["user"] != "-":
+            current = {"machine": MACHINE_LIMITS[key]["name"], "duration": m_state["duration"], "status": m_state["status"]}
+
+    return {
+        "status": "success",
+        "member": {"member_id": member["member_id"], "name": member["name"], "email": member["email"],
+                   "has_face": bool(member["has_face"])},
+        "summary": {"visit_count": v["c"], "last_visit": v["last"],
+                    "usage_count": u["c"], "total_usage_seconds": u["total"]},
+        "current": current,
+        "visits": visits,
+        "usages": usages,
+    }
+
 @app.get("/admin/logs", response_class=HTMLResponse)
 def get_admin_logs_page(request: Request):
     if "admin_user" not in request.session:
         return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "logs.html", {})
 
+def _member_label(names, raw):
+    if raw in names:
+        return f"{names[raw]} ({raw})"
+    return raw
+
+def _member_id_from_label(label):
+    m = re.match(r"^.*\(([^()]+)\)$", label or "")
+    return m.group(1) if m else None
+
+def _member_stats(cursor, member_id):
+    if not member_id:
+        return None
+    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
+                   (member_id,))
+    m = cursor.fetchone()
+    if m is None:
+        return None
+    escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    cursor.execute("SELECT COUNT(*) AS c, MAX(timestamp) AS last FROM passing_logs "
+                   "WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'", (f"%({escaped})",))
+    v = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = ?", (member_id,))
+    u = cursor.fetchone()
+    return {"member_id": m["member_id"], "name": m["name"], "email": m["email"], "has_face": bool(m["has_face"]),
+            "visit_count": v["c"], "last_visit": v["last"], "usage_count": u["c"], "total_usage_seconds": u["total"]}
+
+def _fmt_seconds(sec):
+    sec = int(round(sec or 0))
+    return f"{sec // 60}分{sec % 60}秒" if sec >= 60 else f"{sec}秒"
+
+@app.get("/live", response_class=HTMLResponse)
+async def read_live(request: Request):
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    return templates.TemplateResponse(request, "live.html", {})
+
 @app.get("/api/admin/logs")
-def api_get_logs():
+def api_get_logs(request: Request):
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
-    logs = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return {"logs": logs}
+    cursor.execute("SELECT member_id, name FROM members")
+    names = {row["member_id"]: row["name"] for row in cursor.fetchall()}
 
-# =========================================================================
-# 🔑 管理者用：登録・ログイン画面
-# =========================================================================
+    logs = []
+    cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
+    for r in cursor.fetchall():
+        logs.append({"kind": "gate", "ref": str(r["id"]), "display_id": f"G-{r['id']}", "type": "gate",
+                     "timestamp": r["timestamp"], "event": r["direction"], "member": r["member_id"],
+                     "status": "alert" if r["is_alert"] == 1 else "normal", "duration": None})
+
+    cursor.execute("SELECT id, member_id, machine, start_time, duration FROM occupancy_logs ORDER BY id DESC LIMIT 100")
+    for r in cursor.fetchall():
+        info = MACHINE_LIMITS.get(r["machine"], {})
+        over = bool(info) and (r["duration"] or 0) > info["limit"]
+        logs.append({"kind": "machine", "ref": str(r["id"]), "display_id": f"M-{r['id']}", "type": "machine",
+                     "timestamp": r["start_time"], "event": info.get("name", r["machine"] or "-"),
+                     "member": _member_label(names, r["member_id"]),
+                     "status": "overtime" if over else "normal", "duration": r["duration"]})
+    conn.close()
+    logs.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+    logs = logs[:100]
+
+    live = []
+    for key, m in state.machine_states.items():
+        if m["user"] != "-" and m["start_time"] is not None:
+            live.append({"kind": "active", "ref": key, "display_id": "LIVE", "type": "machine",
+                         "timestamp": datetime.fromtimestamp(m["start_time"]).strftime("%Y-%m-%d %H:%M:%S"),
+                         "event": MACHINE_LIMITS[key]["name"],
+                         "member": _member_label(names, m.get("member_id") or m["user"]),
+                         "status": "overtime" if m["status"] == "overtime" else "active",
+                         "duration": m["duration"]})
+    return {"status": "success", "logs": live + logs}
+
+@app.get("/api/admin/logs/{kind}/{ref}")
+def api_get_log_detail(kind: str, ref: str, request: Request):
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+    not_found = JSONResponse({"status": "error", "message": "ログが見つかりません。"}, status_code=404)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    fields, title, member_id = [], "", None
+
+    if kind in ("gate", "machine"):
+        try:
+            log_id = int(ref)
+        except ValueError:
+            conn.close()
+            return not_found
+
+    if kind == "gate":
+        cursor.execute("SELECT id, timestamp, direction, member_id, is_alert, note FROM passing_logs WHERE id = ?", (log_id,))
+        r = cursor.fetchone()
+        if r is None:
+            conn.close()
+            return not_found
+        member_id = _member_id_from_label(r["member_id"])
+        title = f"{'入館' if r['direction'] == 'IN' else '退館'}ログ G-{r['id']}"
+        fields = [
+            {"label": "日時", "value": r["timestamp"]},
+            {"label": "種別", "value": "入館 (IN)" if r["direction"] == "IN" else "退館 (OUT)"},
+            {"label": "記録された会員", "value": r["member_id"]},
+            {"label": "結果", "value": "警告" if r["is_alert"] == 1 else "正常",
+             "tone": "danger" if r["is_alert"] == 1 else "ok"},
+            {"label": "判定の理由", "value": r["note"] or "（記録なし）"},
+        ]
+    elif kind == "machine":
+        cursor.execute("SELECT id, member_id, machine, start_time, end_time, duration FROM occupancy_logs WHERE id = ?", (log_id,))
+        r = cursor.fetchone()
+        if r is None:
+            conn.close()
+            return not_found
+        member_id = r["member_id"]
+        info = MACHINE_LIMITS.get(r["machine"], {})
+        over = bool(info) and (r["duration"] or 0) > info["limit"]
+        title = f"マシン利用ログ M-{r['id']}"
+        fields = [
+            {"label": "マシン", "value": info.get("name", r["machine"] or "-")},
+            {"label": "開始", "value": r["start_time"]},
+            {"label": "終了", "value": r["end_time"]},
+            {"label": "利用時間", "value": _fmt_seconds(r["duration"])},
+            {"label": "上限", "value": _fmt_seconds(info["limit"]) if info else "-"},
+            {"label": "判定", "value": "時間超過" if over else "範囲内", "tone": "danger" if over else "ok"},
+        ]
+    elif kind == "active":
+        m = state.machine_states.get(ref)
+        if m is None or m["user"] == "-" or m["start_time"] is None:
+            conn.close()
+            return not_found
+        member_id = m.get("member_id")
+        over = m["status"] == "overtime"
+        title = f"現在利用中：{MACHINE_LIMITS[ref]['name']}"
+        fields = [
+            {"label": "マシン", "value": MACHINE_LIMITS[ref]["name"]},
+            {"label": "利用者", "value": m["user"]},
+            {"label": "開始", "value": datetime.fromtimestamp(m["start_time"]).strftime("%Y-%m-%d %H:%M:%S")},
+            {"label": "経過時間", "value": _fmt_seconds(m["duration"])},
+            {"label": "上限", "value": _fmt_seconds(MACHINE_LIMITS[ref]["limit"])},
+            {"label": "状態", "value": "時間超過" if over else "利用中", "tone": "danger" if over else "ok"},
+        ]
+    else:
+        conn.close()
+        return not_found
+
+    member = _member_stats(cursor, member_id)
+    conn.close()
+    return {"status": "success", "kind": kind, "title": title, "fields": fields, "member": member}
+
 @app.get("/admin/register", response_class=HTMLResponse)
 def get_admin_register_page(request: Request):
     return templates.TemplateResponse(request, "admin_register.html", {})
@@ -823,9 +1592,6 @@ def api_admin_register(data: AdminAuthRequest):
 def get_admin_login_page(request: Request):
     return templates.TemplateResponse(request, "admin_login.html", {})
 
-# =========================================================================
-# 🏁 起動確認
-# =========================================================================
 if __name__ == "__main__":
     camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
     camera_thread.start()
