@@ -41,6 +41,7 @@ last_detected_qr = "" # 直近のQRコードを保持する変数
 # =========================================================================
 DB_PATH = "gym_security.db"
 DUPLICATE_QR_WINDOW = 5.0
+STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（既定の95より少し軽くする）
 CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
@@ -53,7 +54,17 @@ SMTP_PORT = 587
 SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
 SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
 
-LINE_X = 320
+# 🚨 違反メール：マシンの利用時間が上限を超えた会員に、利用の終了時にメールで違反内容を知らせる
+VIOLATION_MAIL_ENABLED = True       # False にするとメールを送らない
+VIOLATION_MAIL_COOLDOWN = 600.0     # 同じ会員には、この秒数のあいだ違反メールを重ねて送らない（識別の揺れで続けて送られるのを防ぐ）
+
+# 🎞️ 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
+FRAME_W, FRAME_H = 640, 480    # 元の解像度。高精度にしたいときは 1280, 720 などに上げる（その分CPU負荷が大きく増える）
+LINE_X = FRAME_W // 2          # 入口の通過判定ライン（画面中央）
+YOLO_IMGSZ = 640               # YOLOの推論サイズ（ultralyticsの既定値）。FRAME_W を上げたら合わせて上げる
+FACE_DET_SIZE = (640, 640)     # 顔検出の入力サイズ（幅, 高さ）。入力が640x480なら640で十分（1280にしても精度は上がらず重くなるだけ）
+UI = FRAME_W / 640.0           # 画面上の文字・線の拡大率（HUDの見た目を従来と同じ比率に保つ）
+THICK = max(1, int(round(2 * UI * 0.75)))   # ボックス・ラインの太さ
 CAMERA_ID = 0  # 内蔵カメラ1台
 
 # 🪑 椅子・座り判定の設定
@@ -76,7 +87,37 @@ HIP_SEAT_MIN_DEPTH_NOKNEE = 0.20   # 膝が見えないとき、腰は椅子ボ�
 SHOULDER_ABOVE_SEAT_MAX = 0.40     # 腰が見えない（上半身のみ）とき、肩が椅子ボックスの上端より（椅子の高さ×この割合）以上高ければ立っているとみなす。座ると約0.15、立つと約0.55
 STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
+# 🚪 入口：「顔認証」と「線の通過」を分けて判定する設定
+ENTRANCE_CROSS_MARGIN_PX = round(FRAME_W * 0.03)      # 認証済みの本人が、線からこの距離だけ向こう側（右）で見つかったら通過（入館）とする（幅の3%）
+ENTRANCE_REASSOC_SECONDS = 3.0       # 本人を見失っても、この秒数以内なら直前の位置に近い枠を本人として探し直す
+ENTRANCE_REASSOC_BASE_PX = round(FRAME_W * 0.12)      # 探し直しで許容する移動距離（基本。幅の12%）
+ENTRANCE_REASSOC_PX_PER_SEC = round(FRAME_W * 0.20)   # 探し直しで許容する移動距離（見失った秒数あたりの追加。幅の20%）
+ENTRANCE_OTHER_FACE_SIM = 0.15       # 会員との類似度がこれ未満の顔を含む枠は、別人として探し直しの候補から外す
+ENTRANCE_BANNER_SECONDS = 4.0        # 認証NG・失効のメッセージを画面に出す秒数
+
+# 🚪 退館：QRは使わず、顔だけで誰が出たかを識別する（全会員との1:N照合）
+EXIT_FACE_THRESHOLD = 0.40    # 退館時の顔識別のしきい値。別人に誤認されるなら上げる、識別できないなら下げる（画面の会員ID＋類似度を見て調整）
+
+# 👕 顔が見えないときの服装による補助推定（ルームモード）
+CLOTHES_FALLBACK_ENABLED = True   # False にすると服装による推定を完全に無効化（顔だけで識別）
+CLOTHES_MAX_DIST = 20.0           # 服装の色の差（Lab空間の距離。上半身・下半身の大きいほう）がこれ以上なら別人扱い。小さいほど厳しい
+CLOTHES_MIN_MARGIN = 8.0          # 候補が複数いるとき、1位と2位の差がこれ未満なら決めない（曖昧なので Guest のまま）
+
+CLOTHES_RECHECK_SECONDS = 1.5     # 服装で推定した本人の服が、入口の記録と合わない状態がこの秒数続いたら推定を解除する
+
 RECENT_ENTRY_TTL = 900.0      # 入口で記録した服装情報を、服装による補助判定の候補に残す秒数（15分）
+
+def put_text(img, text, org, font, fs, color, th=2, hud=True):
+    """cv2.putText と同じ引数。hud=True なら位置・文字サイズ・太さを解像度に合わせて拡大する。
+    人ボックスに付けるラベルなど、実座標を渡す場合は hud=False にする。"""
+    x, y = (int(org[0] * UI), int(org[1] * UI)) if hud else (int(org[0]), int(org[1]))
+    cv2.putText(img, text, (x, y), font, fs * UI, color, max(1, int(round(th * UI))))
+
+def open_camera():
+    cap = cv2.VideoCapture(CAMERA_ID)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
+    return cap
 
 # 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
 active_mode = "entrance"
@@ -162,6 +203,84 @@ yolo_model = None
 qr_detector = cv2.QRCodeDetector()
 
 # =========================================================================
+# 🚨 違反メール（マシンの利用時間超過）
+# =========================================================================
+_violation_mail_last = {}   # {member_id: 最後に送信した時刻}
+_violation_mail_lock = threading.Lock()
+
+def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
+    """時間超過した会員に、違反内容をメールで送る。送れたら True。"""
+    from email.header import Header
+    info = MACHINE_LIMITS.get(machine_key, {})
+    limit = info.get("limit", 0.0)
+    machine_name = info.get("name", machine_key)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            row = conn.execute("SELECT name, email FROM members WHERE member_id = ?", (member_id,)).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"⚠️ 違反メール：会員情報の取得に失敗: {e}")
+        return False
+    if row is None or not row[1]:
+        print(f"⚠️ 違反メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
+        return False
+    name, email = row
+
+    body = (
+        f"{name} 様\n\n"
+        "ご利用中のマシンで、利用時間の上限を超過しましたのでお知らせします。\n\n"
+        "■ 違反内容：マシンの利用時間超過\n"
+        f"■ マシン：{machine_name}\n"
+        f"■ 利用開始：{start_str}\n"
+        f"■ 利用終了：{end_str}\n"
+        f"■ 利用時間：{_fmt_seconds(duration)}\n"
+        f"■ 上限：{_fmt_seconds(limit)}\n"
+        f"■ 超過時間：{_fmt_seconds(duration - limit)}\n\n"
+        "他の会員様がお待ちの場合がありますので、上限時間内でのご利用にご協力をお願いいたします。"
+    )
+    msg = MIMEMultipart()
+    msg["Subject"] = Header("【ジムセキュリティ】マシン利用時間超過のお知らせ", "utf-8")
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = email
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, email, msg.as_string())
+    except Exception as e:
+        print(f"⚠️ 違反メールの送信に失敗（{name} / {member_id}）: {e}")
+        return False
+    print(f"📧 【違反メール送信】 {name}（{member_id}）宛：{machine_name} の時間超過（{_fmt_seconds(duration)} / 上限 {_fmt_seconds(limit)}）")
+    return True
+
+def notify_overtime_async(member_id, machine_key, start, end, duration):
+    """時間超過を会員にメールで知らせる。別スレッドで送るので、カメラ処理は止まらない。"""
+    if not VIOLATION_MAIL_ENABLED:
+        return
+    if not member_id:
+        print("⚠️ 時間超過ですが会員IDが分からないため、違反メールは送りません")
+        return
+    now = time.time()
+    with _violation_mail_lock:
+        last = _violation_mail_last.get(member_id)
+        if last is not None and now - last < VIOLATION_MAIL_COOLDOWN:
+            print(f"ℹ️ 違反メールは直近に送信済みのためスキップ: {member_id}")
+            return
+        _violation_mail_last[member_id] = now
+
+    def worker():
+        ok = _send_overtime_mail(member_id, machine_key, start.strftime("%Y-%m-%d %H:%M:%S"),
+                                 end.strftime("%Y-%m-%d %H:%M:%S"), duration)
+        if not ok:   # 送れなかったときは、次の機会に再送できるよう記録を戻す
+            with _violation_mail_lock:
+                _violation_mail_last.pop(member_id, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+# =========================================================================
 # 💾 システム状態管理（ステート）用クラス
 # =========================================================================
 class SystemStateManager:
@@ -176,6 +295,13 @@ class SystemStateManager:
         self.rejected_time = 0.0
         self.co_trailing_alert = False
         
+        # 館内にいる会員（QR＋顔で正規に入館し、まだ退館していない人）。退館時の識別はこの人たちに限る
+        self.inside_members = {}   # {member_id: 入館時刻}
+        self.last_clothes_dist = None   # 直近の服装推定で採用した色の差（診断表示用）
+        self._clothes_log_time = 0.0
+        self.clothes_diag = "not evaluated"   # 直近の服装照合の結果（画面に表示。cv2は日本語を描けないので英数字）
+        self._restore_inside_members()
+
         # 入口の1:1照合用に直近の会員情報と顔特徴量を保持
         self.last_member_id = None
         self.last_member_embedding = None
@@ -191,6 +317,40 @@ class SystemStateManager:
         self.update_queue = Queue()
         self.recent_entries = [] # 直近の入室者リスト
 
+    def _restore_inside_members(self):
+        """再起動で「館内にいる人」が消えないよう、直近24時間のログから復元する。"""
+        try:
+            from datetime import timedelta
+            since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                rows = conn.execute(
+                    "SELECT timestamp, direction, member_id, is_alert FROM passing_logs WHERE timestamp >= ? ORDER BY id",
+                    (since,)).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"⚠️ 館内の会員の復元に失敗: {e}")
+            return
+        for ts, direction, label, alert in rows:
+            m = re.match(r"^.*\(([^()]+)\)$", label or "")
+            if not m:
+                continue
+            if direction == "IN" and not alert:
+                self.inside_members[m.group(1)] = ts
+            elif direction == "OUT":
+                self.inside_members.pop(m.group(1), None)
+
+    def mark_inside(self, member_id):
+        """正規に入館した会員を「館内にいる」として記録する。"""
+        with self._lock:
+            self.inside_members[member_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def leave_if_inside(self, member_id):
+        """館内にいる会員なら退館扱いにして True。入館記録がなければ False。"""
+        with self._lock:
+            return self.inside_members.pop(member_id, None) is not None
+
     def add_recent_entry(self, member_id, name, color_feat, current_time):
         with self._lock:
             self.recent_entries = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
@@ -201,27 +361,66 @@ class SystemStateManager:
                 "time": current_time
             })
 
-    def match_recent_entry_by_feature(self, person_box, frame, current_time):
+    def match_recent_entry_by_feature(self, kxy, kconf, frame, current_time):
+        """顔が見えない人を、入口で記録した服装から推定する。
+        ・上半身と下半身の色分布が、どちらも十分近い会員だけを候補にする。
+        ・候補が複数いて1位と2位の差が小さいときは、曖昧なので決めない。"""
+        if not CLOTHES_FALLBACK_ENABLED:
+            self.clothes_diag = "off"
+            return None, None
         with self._lock:
             # 古い記録は、新しい入館者がいなくても照合の時点で候補から外す
             candidates = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
             if not candidates:
+                self.clothes_diag = "no clothes record (not captured at entrance, or >15min)"
                 return None, None
-            
-            target_color = get_box_color_feature(frame, person_box)
-            best_match = None
-            min_dist = float('inf')
-            
+
+            target = get_box_color_feature(frame, kxy, kconf)
+            if target is None:
+                self.clothes_diag = "no torso color (shoulders not seen / mostly skin)"
+                return None, None
+
+            # 会員ごとに一番近い記録を使う（同じ人が複数回入館していても、1位と2位の比較に影響させない）
+            per_member = {}
             for entry in candidates:
-                dist = np.linalg.norm(entry["color_feat"] - target_color)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_match = entry
-            
-            if min_dist < 80.0 and best_match is not None:
-                return best_match["name"], best_match["member_id"]
-                
-        return None, None
+                d = clothes_distance(entry["color_feat"], target)
+                cur = per_member.get(entry["member_id"])
+                if cur is None or d < cur[0]:
+                    per_member[entry["member_id"]] = (d, entry)
+            ranked = sorted(per_member.values(), key=lambda x: x[0])
+            best_d, best = ranked[0]
+            second_d = ranked[1][0] if len(ranked) > 1 else None
+
+            self.clothes_diag = (f"cand={len(ranked)} best={best['member_id']} d={best_d:.1f}"
+                                 + (f" 2nd={second_d:.1f}" if second_d is not None else ""))
+            reason = None
+            if best_d >= CLOTHES_MAX_DIST:
+                reason = f"服装が違う（最小の差 {best_d:.2f} ≥ 上限 {CLOTHES_MAX_DIST}）"
+            elif second_d is not None and (second_d - best_d) < CLOTHES_MIN_MARGIN:
+                reason = f"服装が似た候補が複数いて決められない（差 {best_d:.2f} / {second_d:.2f}）"
+
+            if reason is not None:
+                self.clothes_diag += " -> reject"
+                if current_time - self._clothes_log_time >= 3.0:   # 毎フレームは出さない
+                    print(f"👕 服装による推定は見送り：{reason}")
+                    self._clothes_log_time = current_time
+                return None, None
+
+            self.clothes_diag += " -> match"
+            self.last_clothes_dist = best_d
+            return best["name"], best["member_id"]
+
+    def clothes_distance_to_member(self, member_id, kxy, kconf, frame, current_time):
+        """この会員の入口での服装記録のうち、いまの人の服装に最も近いものとの差。比べられなければ None。"""
+        with self._lock:
+            feats = [e["color_feat"] for e in self.recent_entries
+                     if e["member_id"] == member_id and current_time - e["time"] <= RECENT_ENTRY_TTL]
+        if not feats:
+            return None
+        target = get_box_color_feature(frame, kxy, kconf)
+        if target is None:
+            return None
+        return min(clothes_distance(f, target) for f in feats)
 
     def should_process_qr(self, qr_data: str, now: float) -> bool:
         with self._lock:
@@ -309,6 +508,8 @@ class SystemStateManager:
             conn.close()
         except Exception as e:
             print(f"⚠️ 占有ログの保存に失敗: {e}")
+        if m_state["duration"] > MACHINE_LIMITS[m_key]["limit"]:
+            notify_overtime_async(m_state.get("member_id"), m_key, start, end, m_state["duration"])
 
     def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None, member_id=None):
         with self._lock:
@@ -455,25 +656,99 @@ class MemberFaceCache:
 
 member_cache = MemberFaceCache()
 
-def get_box_color_feature(frame, box):
-    x1, y1, x2, y2 = map(int, box)
-    h_img, w_img, _ = frame.shape
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w_img, x2), min(h_img, y2)
-    if x2 <= x1 or y2 <= y1:
-        return np.zeros(3, dtype=float)
-    
-    chest_y1 = y1 + int((y2 - y1) * 0.2)
-    chest_y2 = y1 + int((y2 - y1) * 0.7)
-    if chest_y2 <= chest_y1:
-        chest_y1, chest_y2 = y1, y2
-        
-    roi = frame[chest_y1:chest_y2, x1:x2]
-    if roi.size == 0:
-        return np.zeros(3, dtype=float)
-        
-    mean_color = cv2.mean(roi)[:3]
-    return np.array(mean_color, dtype=float)
+def _iou(a, b):
+    inter = _box_inter(a, b)
+    union = _box_area(a) + _box_area(b) - inter
+    return inter / union if union > 0 else 0.0
+
+def find_pose_for_box(pose_result, box, min_iou=0.3):
+    """骨格推定の結果から、指定した人の枠に一番重なる人の (keypoints xy, conf) を返す。見つからなければ (None, None)。"""
+    if (pose_result is None or pose_result.boxes is None or len(pose_result.boxes) == 0
+            or pose_result.keypoints is None):
+        return None, None
+    p_boxes = pose_result.boxes.xyxy.cpu().numpy()
+    kxy = pose_result.keypoints.xy.cpu().numpy()
+    kcf = (pose_result.keypoints.conf.cpu().numpy() if pose_result.keypoints.conf is not None
+           else np.ones(kxy.shape[:2]))
+    best_i, best_iou = None, min_iou
+    for i in range(len(p_boxes)):
+        v = _iou(box, p_boxes[i])
+        if v >= best_iou:
+            best_i, best_iou = i, v
+    if best_i is None:
+        return None, None
+    return kxy[best_i], kcf[best_i]
+
+def clothes_roi(frame_shape, kxy, kconf):
+    """服の色を測る範囲（胸〜腹の中央）を、骨格の肩・腰の位置から決める。肩が見えていなければ None。
+    人の枠の割合で決めると、近づいたときに顔や首（肌）を測ってしまい、服を替えても一致してしまうため。"""
+    if kxy is None or kconf is None:
+        return None
+    if kconf[5] < KP_CONF or kconf[6] < KP_CONF:
+        return None
+    ls, rs = kxy[5], kxy[6]
+    sw = abs(float(ls[0]) - float(rs[0]))
+    if sw < FRAME_W * 0.05:      # 肩幅が極端に狭い（真横向き・遠すぎ）と、胸の範囲が決められない
+        return None
+    sy = (float(ls[1]) + float(rs[1])) / 2
+    if kconf[11] >= KP_CONF and kconf[12] >= KP_CONF:
+        hy = (float(kxy[11][1]) + float(kxy[12][1])) / 2
+    else:
+        hy = sy + 1.1 * sw       # 腰が見えない（机で隠れる等）ときは、肩幅から胴の長さを見積もる
+    if hy - sy < 0.5 * sw:
+        return None
+    x1 = min(float(ls[0]), float(rs[0])) + 0.25 * sw
+    x2 = max(float(ls[0]), float(rs[0])) - 0.25 * sw
+    y1 = sy + 0.25 * (hy - sy)
+    y2 = sy + 0.70 * (hy - sy)
+    h_img, w_img = frame_shape[:2]
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(w_img, int(x2)), min(h_img, int(y2))
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        return None
+    return x1, y1, x2, y2
+
+def get_box_color_feature(frame, kxy, kconf):
+    """服の色：胸まわりの範囲から、肌色のピクセルを除いた代表色（Lab色空間の中央値）[L,a,b]。
+    骨格が取れない、または範囲のほとんどが肌色のときは None（＝服では判定しない）。"""
+    r = clothes_roi(frame.shape, kxy, kconf)
+    if r is None:
+        return None
+    roi = frame[r[1]:r[3], r[0]:r[2]]
+    ycc = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
+    cr, cb = ycc[:, :, 1], ycc[:, :, 2]
+    skin = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)   # 手・首・顔などの肌色
+    keep = ~skin
+    if keep.sum() < 50 or keep.sum() < 0.4 * keep.size:
+        return None
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)[keep].astype(np.float32)
+    return np.median(lab, axis=0)
+
+def lab_to_bgr(lab):
+    bgr = cv2.cvtColor(np.uint8([[np.clip(lab, 0, 255)]]), cv2.COLOR_LAB2BGR)[0][0]
+    return int(bgr[0]), int(bgr[1]), int(bgr[2])
+
+def draw_swatch(frame, slot, label, lab_feat):
+    """右上に色の見本（四角）を並べる（slot 0 が右端）。測れていないときは × を描く。"""
+    size, step = int(36 * UI), int(60 * UI)
+    x, y = FRAME_W - (slot + 1) * step, int(10 * UI)
+    if lab_feat is None:
+        cv2.rectangle(frame, (x, y), (x + size, y + size), (140, 140, 140), 1)
+        cv2.line(frame, (x, y), (x + size, y + size), (140, 140, 140), 1)
+        cv2.line(frame, (x + size, y), (x, y + size), (140, 140, 140), 1)
+    else:
+        cv2.rectangle(frame, (x, y), (x + size, y + size), lab_to_bgr(lab_feat), -1)
+        cv2.rectangle(frame, (x, y), (x + size, y + size), (255, 255, 255), 1)
+    cv2.putText(frame, str(label)[:8], (x, y + size + int(14 * UI)), cv2.FONT_HERSHEY_SIMPLEX,
+                0.4 * UI, (255, 255, 255), 1)
+
+_CLOTHES_WEIGHT = np.array([0.5, 1.0, 1.0], dtype=np.float32)   # 明るさ(L)は照明で変わりやすいので重みを半分にする
+
+def clothes_distance(a, b):
+    """2つの服装（上半身の色）の差。大きいほど別の服。"""
+    if a is None or b is None or a.shape != b.shape:
+        return 255.0
+    return float(np.linalg.norm((a - b) * _CLOTHES_WEIGHT))
 
 def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
     if last_scanned_qr == "None":
@@ -489,6 +764,19 @@ def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
     if best_sim <= FACE_MATCH_THRESHOLD:
         return False, f"顔の類似度が不足（最大{best_sim:.2f} ≤ しきい値{FACE_MATCH_THRESHOLD}）"
     return True, ""
+
+def identify_face_1n(embedding, member_ids, member_names, member_matrix):
+    """顔の特徴量を全会員と照合し、最も似ている会員 (member_id, name, sim) を返す。
+    顔データ付きの会員がいない／次元が合わないときは None。"""
+    if member_matrix is None:
+        return None
+    fe = np.asarray(embedding, dtype=np.float32)
+    fn = np.linalg.norm(fe)
+    if fn == 0 or fe.shape[0] != member_matrix.shape[1]:
+        return None
+    sims = member_matrix @ (fe / fn)
+    idx = int(np.argmax(sims))
+    return member_ids[idx], member_names[idx], float(sims[idx])
 
 def sit_overlap_ratio(p_box, seat_boxes):
     px1, py1, px2, py2 = p_box
@@ -625,6 +913,120 @@ def evaluate_sitting(box, kxy, kconf, seat_boxes):
     return True, overlap, f"box(h/w={h / w:.1f})"
 
 # =========================================================================
+# 🚪 入口の認証セッション（QR → 顔の一致 → 線の通過 を1人分まとめて管理）
+# =========================================================================
+class EntranceSession:
+    """QRを読んだ会員1人分の状態を管理する（入口モード用）。
+
+    ・会員の顔と一致した時点で「顔認証OK」にする（線をまたぐ瞬間を待たない）。
+    ・認証後は、顔 → 追跡ID → 直前の位置に近い枠 の順で本人を探し直す。
+      そのため、処理が遅れて枠のIDが付け替わっても本人を見失いにくい。
+    ・線の手前（左）にいた本人が、線から一定距離だけ向こう側（右）で見つかった時点で通過（入館）とする。
+      線をまたいだ瞬間のフレームは必要ない。"""
+
+    def __init__(self, member_id, label, embedding):
+        self.member_id = member_id
+        self.label = label
+        self.embedding = embedding
+        self.authed = False
+        self.auth_time = None
+        self.match_sim = 0.0         # 会員と一致した顔の最大類似度
+        self.best_sim_seen = None    # QR読み取り後に見えた全ての顔の最大類似度（不一致の診断用）
+        self.track_id = None
+        self.pos = None              # 本人を最後に確認した位置 (x, y)
+        self.last_box = None
+        self.last_seen = None
+        self.armed = False           # 線の手前（左）にいたことを確認済みか
+        self.done = False
+        self.last_face_sims = []     # [(face, 会員との類似度)] 描画用
+
+    @staticmethod
+    def _center(box):
+        return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+    def _has_other_face(self, box):
+        """この枠の中に、会員とは明らかに別人の顔があるか。"""
+        for face, sim in self.last_face_sims:
+            fx, fy = self._center(face.bbox)
+            if box[0] <= fx <= box[2] and box[1] <= fy <= box[3] and sim < ENTRANCE_OTHER_FACE_SIM:
+                return True
+        return False
+
+    def update(self, now, qr_time, tracked, faces):
+        """1フレーム分の更新。tracked は [(track_id, box), ...]。
+        戻り値: None / "authed"（顔認証OK）/ "crossed"（通過=入館）/ "expired"（時間切れ）"""
+        if self.done:
+            return None
+        if now - qr_time > CO_TRAILING_WINDOW:
+            self.done = True
+            return "expired"
+
+        # 1) 会員の顔と似ている顔を探す
+        self.last_face_sims = []
+        face_hit = None
+        for face in faces:
+            sim = cosine_sim(self.embedding, face.embedding)
+            self.last_face_sims.append((face, sim))
+            if self.best_sim_seen is None or sim > self.best_sim_seen:
+                self.best_sim_seen = sim
+            if sim > FACE_MATCH_THRESHOLD and (face_hit is None or sim > face_hit[2]):
+                fc = self._center(face.bbox)
+                face_hit = (fc[0], fc[1], sim)
+
+        # 2) 本人の位置を決める
+        pos = box = tid = None
+        if face_hit is not None:
+            fx, fy, sim = face_hit
+            self.match_sim = max(self.match_sim, sim)
+            for t, b in tracked:
+                if b[0] <= fx <= b[2] and b[1] <= fy <= b[3]:
+                    box, tid = b, t
+                    break
+            pos = self._center(box) if box is not None else (fx, fy)   # 枠が無くても顔の位置を使う
+        elif self.authed:
+            # 顔が見えないとき：同じ追跡IDの枠 → なければ直前の位置に近い枠
+            for t, b in tracked:
+                if t == self.track_id:
+                    box, tid = b, t
+                    break
+            if box is None and self.pos is not None and now - self.last_seen <= ENTRANCE_REASSOC_SECONDS:
+                allowed = ENTRANCE_REASSOC_BASE_PX + ENTRANCE_REASSOC_PX_PER_SEC * (now - self.last_seen)
+                best_d = None
+                for t, b in tracked:
+                    c = self._center(b)
+                    d = float(np.hypot(c[0] - self.pos[0], c[1] - self.pos[1]))
+                    if d > allowed or (best_d is not None and d >= best_d) or self._has_other_face(b):
+                        continue
+                    box, tid, best_d = b, t, d
+            if box is not None:
+                pos = self._center(box)
+
+        if pos is not None:
+            self.pos, self.last_seen = pos, now
+            if box is not None:
+                self.last_box = box
+            if tid is not None:
+                self.track_id = tid
+
+        # 3) 顔認証
+        event = None
+        if not self.authed:
+            if face_hit is None:
+                return None
+            self.authed = True
+            self.auth_time = now
+            event = "authed"
+
+        # 4) 通過の判定（線の手前にいた本人が、向こう側で見つかったら通過）
+        if pos is not None:
+            if pos[0] < LINE_X:
+                self.armed = True
+            elif self.armed and pos[0] >= LINE_X + ENTRANCE_CROSS_MARGIN_PX:
+                self.done = True
+                return "crossed"
+        return event
+
+# =========================================================================
 # 🎥 カメラ処理ループ
 # =========================================================================
 def camera_processing_loop():
@@ -638,17 +1040,20 @@ def camera_processing_loop():
     
     print("👤 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-    face_app.prepare(ctx_id=0, det_size=(640, 640))
+    face_app.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
 
-    cap = cv2.VideoCapture(CAMERA_ID)
+    cap = open_camera()
     while not cap.isOpened():
         print("❌ エラー: カメラを開けませんでした。3秒後に再試行します...")
         time.sleep(3)
         cap.release()
-        cap = cv2.VideoCapture(CAMERA_ID)
+        cap = open_camera()
+    print(f">> カメラ解像度: {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f}"
+          f"（目標 {FRAME_W}x{FRAME_H} / YOLO imgsz={YOLO_IMGSZ} / 顔検出 {FACE_DET_SIZE[0]}x{FACE_DET_SIZE[1]}）")
 
     track_history = {}
     face_sim_history = {}
+    exit_id_history = {}   # 退館用：追跡IDごとに、顔で識別した会員 {member_id, name, sim, time}
     last_push_time = 0.0
     last_err_log = 0.0
     prev_frame_time = None   # 1フレームの処理時間の計測用（遅いとタイマー系の判定に影響するため画面に出す）
@@ -658,7 +1063,26 @@ def camera_processing_loop():
     sit_confirmer = SitConfirmer()
     seat_memory = []
     identity_holder = IdentityHolder()
+    clothes_mismatch_since = None   # 服装で推定した本人の服が合わなくなり始めた時刻
+
+    def entrance_clothes_feature(frame, box, member_id):
+        """入館した人の服の色（胸まわり）を測る。骨格推定を1回だけ実行する。測れなければ None。"""
+        try:
+            res = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
+            kxy, kcf = find_pose_for_box(res, box)
+            feat = get_box_color_feature(frame, kxy, kcf)
+        except Exception as e:
+            print(f"⚠️ 入口の服装の測定に失敗: {e}")
+            return None
+        if feat is None:
+            print(f"👕 入口の服装を測れませんでした（肩が写っていない、または胸まわりが肌色ばかり）: {member_id}")
+        else:
+            b, g, r = lab_to_bgr(feat)
+            print(f"👕 入口の服装を記録: {member_id} 色(RGB)=({r},{g},{b})")
+        return feat
     sit_log = {"key": None, "time": 0.0}
+    entrance_session = None   # 入口：QRを読んだ会員1人分の認証セッション
+    auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}   # 認証NG・失効・入館OKの一時表示
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
@@ -674,28 +1098,102 @@ def camera_processing_loop():
                 time.sleep(0.03)
                 continue
 
-            frame = cv2.resize(frame, (640, 480))
+            if frame.shape[1] != FRAME_W or frame.shape[0] != FRAME_H:
+                frame = cv2.resize(frame, (FRAME_W, FRAME_H))   # カメラが指定解像度に非対応のときの保険
             with mode_lock:
                 mode = active_mode
+            if mode != "entrance":
+                entrance_session = None
 
             if mode == "entrance":
                 qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
                 if qr_bbox is not None and len(qr_bbox) > 0:
                     pts = qr_bbox[0].astype(int)
                     for i in range(4):
-                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), 2)
+                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), THICK)
                     if qr_data:
                         if state.should_process_qr(qr_data, current_time):
                             state.process_qr(qr_data, current_time)
+                            if (state.accepted_token == qr_data and state.last_member_id is not None
+                                    and state.last_member_embedding is not None):
+                                # 有効なQR：この会員の顔認証セッションを開始（顔データ未登録の会員は従来どおり通過時に失敗扱い）
+                                entrance_session = EntranceSession(state.last_member_id, state.last_scanned_qr,
+                                                                   state.last_member_embedding)
+                                auth_banner["until"] = 0.0
+                            elif state.last_scanned_qr == "Invalid QR":
+                                entrance_session = None
 
                 faces = face_app.get(frame)
 
-                yolo_results = yolo_model.track(frame, persist=True, classes=[0], verbose=False)
-                cv2.line(frame, (LINE_X, 0), (LINE_X, 480), (255, 0, 0), 2)
-                cv2.putText(frame, "GATE LINE", (LINE_X + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                yolo_results = yolo_model.track(frame, persist=True, classes=[0], imgsz=YOLO_IMGSZ, verbose=False)
+                cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_H), (255, 0, 0), THICK)
+                put_text(frame, "GATE LINE", (LINE_X + 10, int(30 * UI)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, hud=False)
 
                 for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                     del face_sim_history[tid]
+                for tid in [t for t, r in exit_id_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
+                    del exit_id_history[tid]
+                member_ids, member_names, member_matrix = member_cache.get()   # 退館時の1:N識別用
+
+                tracked = []   # [(track_id, box), ...]
+                if yolo_results[0].boxes.id is not None:
+                    tracked = list(zip(yolo_results[0].boxes.id.cpu().numpy().astype(int),
+                                       yolo_results[0].boxes.xyxy.cpu().numpy()))
+
+                # --- 顔認証セッションの更新（顔が会員と一致した時点で認証OK。線を越えた本人を探し直して通過を判定） ---
+                skip_tid = None      # このIDの通過は下の従来判定ではなく、ここで扱う
+                face_sims = []
+                if entrance_session is not None:
+                    sess = entrance_session
+                    ev = sess.update(current_time, state.last_qr_time, tracked, faces)
+                    skip_tid = sess.track_id
+                    face_sims = sess.last_face_sims
+                    member_name = sess.label.split(" (")[0] if " (" in sess.label else sess.label
+                    if ev == "authed":
+                        print(f"✅ 【顔認証OK】 {sess.label}（類似度 {sess.match_sim:.2f}）… このまま線を越えると入館になります")
+                        if sess.last_box is not None:
+                            sess.clothes_feat = entrance_clothes_feature(frame, sess.last_box, sess.member_id)
+                    elif ev == "crossed":
+                        print(f"{member_name}：認証成功（類似度: {sess.match_sim:.2f}）… 顔認証後に線の向こう側で確認")
+                        state.register_pass("IN", sess.label, 0,
+                                            note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
+                        state.mark_inside(sess.member_id)
+                        feat = (entrance_clothes_feature(frame, sess.last_box, sess.member_id)
+                                if sess.last_box is not None else None)
+                        if feat is None:
+                            feat = getattr(sess, "clothes_feat", None)   # 顔認証OKの時点で測れていれば、それを使う
+                        if feat is not None:
+                            state.add_recent_entry(sess.member_id, member_name, feat, current_time)
+                        auth_banner.update(text=f"IN OK: {sess.member_id}", color=(0, 255, 0),
+                                           until=current_time + ENTRANCE_BANNER_SECONDS)
+                    elif ev == "expired":
+                        if sess.authed:
+                            print(f"⌛ 【認証失効】 {sess.label}：顔認証後、{CO_TRAILING_WINDOW:.0f}秒以内に線を越えなかったため失効しました")
+                            auth_banner.update(text=f"AUTH EXPIRED: {sess.member_id}", color=(0, 165, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                        elif sess.best_sim_seen is not None:
+                            print(f"❌ 【顔認証NG】 {sess.label}：QRと顔が一致しませんでした（最大類似度 {sess.best_sim_seen:.2f} ≤ しきい値 {FACE_MATCH_THRESHOLD}）")
+                            state.set_alert(True)
+                            auth_banner.update(text=f"AUTH NG (face mismatch): {sess.member_id}", color=(0, 0, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                        else:
+                            print(f"⌛ 【顔認証タイムアウト】 {sess.label}：{CO_TRAILING_WINDOW:.0f}秒以内に顔が見つかりませんでした")
+                            auth_banner.update(text=f"AUTH TIMEOUT (no face): {sess.member_id}", color=(0, 165, 255),
+                                               until=current_time + ENTRANCE_BANNER_SECONDS)
+                    if sess.done:
+                        entrance_session = None
+
+                # 顔の枠（会員と一致した顔=黄、それ以外=灰）。認証セッション中は類似度も表示する
+                sim_by_face = {id(f): sv for f, sv in face_sims}
+                for face in faces:
+                    fsim = sim_by_face.get(id(face))
+                    matched = fsim is not None and fsim > FACE_MATCH_THRESHOLD
+                    fb = face.bbox.astype(int)
+                    cv2.rectangle(frame, (int(fb[0]), int(fb[1])), (int(fb[2]), int(fb[3])),
+                                  (0, 255, 255) if matched else (160, 160, 160), 2)
+                    if fsim is not None:
+                        put_text(frame, f"face:{fsim:.2f}", (int(fb[0]), max(int(15 * UI), int(fb[1]) - int(8 * UI))),
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255) if matched else (200, 200, 200), 1, hud=False)
 
                 if yolo_results[0].boxes.id is not None:
                     boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
@@ -703,7 +1201,9 @@ def camera_processing_loop():
 
                     for box, track_id in zip(boxes, track_ids):
                         x_center = int((box[0] + box[2]) / 2)
-                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), THICK)
+                        put_text(frame, f"ID:{track_id}", (int(box[0]), int(box[3]) + int(18 * UI)),
+                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, hud=False)
 
                         if state.last_member_embedding is not None:
                             for face in faces:
@@ -719,14 +1219,37 @@ def camera_processing_loop():
                                         rec["best"] = sim
                                         rec["time"] = current_time
 
+                        # 退館用：この人の枠内の顔を全会員と照合（1:N）。QRは使わず、最も似た会員を線を越えるまで保持する
+                        for face in faces:
+                            fcx = (face.bbox[0] + face.bbox[2]) / 2
+                            fcy = (face.bbox[1] + face.bbox[3]) / 2
+                            if not (box[0] <= fcx <= box[2] and box[1] <= fcy <= box[3]):
+                                continue
+                            ident = identify_face_1n(face.embedding, member_ids, member_names, member_matrix)
+                            if ident is None or ident[2] <= EXIT_FACE_THRESHOLD:
+                                continue
+                            erec = exit_id_history.get(track_id)
+                            if erec is None or current_time - erec["time"] > FACE_TIMEOUT or ident[2] > erec["sim"]:
+                                exit_id_history[track_id] = {"member_id": ident[0], "name": ident[1],
+                                                             "sim": ident[2], "time": current_time}
+                            else:
+                                erec["time"] = current_time
+                        erec = exit_id_history.get(track_id)
+                        if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
+                            put_text(frame, f"{erec['member_id']} {erec['sim']:.2f}",
+                                     (int(box[0]), int(box[3]) + int(36 * UI)),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, hud=False)
+
                         rec = face_sim_history.get(track_id)
                         if rec is not None and current_time - rec["time"] <= FACE_TIMEOUT:
-                            cv2.putText(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(15, int(box[1]) - 8)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                            put_text(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(int(15 * UI), int(box[1]) - int(8 * UI))),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, hud=False)
 
                         if track_id in track_history:
                             prev_x = track_history[track_id]
-                            if prev_x < LINE_X and x_center >= LINE_X:
+                            if skip_tid is not None and track_id == skip_tid and prev_x < LINE_X and x_center >= LINE_X:
+                                pass   # 認証セッションの本人の通過は、上の判定（線の向こう側で本人を確認）で扱う
+                            elif prev_x < LINE_X and x_center >= LINE_X:
                                 time_since_qr = current_time - state.last_qr_time
                                 rec = face_sim_history.get(track_id)
                                 best_sim = None
@@ -743,20 +1266,51 @@ def camera_processing_loop():
                                     member_name = state.last_scanned_qr.split(" (")[0] if " (" in state.last_scanned_qr else state.last_scanned_qr
                                     print(f"{member_name}：認証成功（類似度: {best_sim:.2f}）")
                                     state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
-                                    color_feat = get_box_color_feature(frame, box)
-                                    state.add_recent_entry(state.last_member_id, member_name, color_feat, current_time)
+                                    state.mark_inside(state.last_member_id)
+                                    color_feat = entrance_clothes_feature(frame, box, state.last_member_id)
+                                    if color_feat is not None:
+                                        state.add_recent_entry(state.last_member_id, member_name, color_feat, current_time)
                                 else:
                                     print(f"未登録または別人：認証失敗（理由: {reason}）")
                                     state.set_alert(True)
                                     state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
                             elif prev_x > LINE_X and x_center <= LINE_X:
-                                state.register_pass("OUT", "Unknown", 0)
+                                # 退館：QRは不要。線を越えるまでに顔で識別できた会員を記録する
+                                erec = exit_id_history.get(track_id)
+                                if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
+                                    if state.leave_if_inside(erec["member_id"]):
+                                        out_label = f"{erec['name']} ({erec['member_id']})"
+                                        print(f"{erec['name']}：退館（顔の類似度: {erec['sim']:.2f}）")
+                                        state.register_pass("OUT", out_label, 0,
+                                                            note=f"顔で識別（類似度 {erec['sim']:.2f}）")
+                                    else:
+                                        out_reason = "入館記録がない（QR認証なしで入館した可能性）"
+                                        print(f"退館者を Unknown として記録します（理由: {out_reason}）")
+                                        state.register_pass("OUT", "Unknown", 0,
+                                                            note=f"{out_reason}／顔は {erec['name']} ({erec['member_id']}) に類似（{erec['sim']:.2f}）")
+                                else:
+                                    if member_matrix is None:
+                                        out_reason = "顔データが登録された会員がいないため識別できない"
+                                    else:
+                                        out_reason = f"退館前に顔を識別できなかった（しきい値 {EXIT_FACE_THRESHOLD}）"
+                                    print(f"退館者を識別できませんでした（理由: {out_reason}）")
+                                    state.register_pass("OUT", "Unknown", 0, note=out_reason)
                                 state.set_alert(False)
 
                         track_history[track_id] = x_center
 
-                cv2.putText(frame, "MODE: [ENTRANCE (QR + 1:1 Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                cv2.putText(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                put_text(frame, "MODE: [ENTRANCE (IN: QR+Face / OUT: Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                if entrance_session is not None:
+                    remain = max(0.0, CO_TRAILING_WINDOW - (current_time - state.last_qr_time))
+                    if entrance_session.authed:
+                        put_text(frame, f"AUTH OK: {entrance_session.member_id} sim={entrance_session.match_sim:.2f} "
+                                        f"-> go through ({remain:.0f}s)", (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    else:
+                        put_text(frame, f"QR OK: {entrance_session.member_id} - show your face ({remain:.0f}s)",
+                                 (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                elif current_time < auth_banner["until"]:
+                    put_text(frame, auth_banner["text"], (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_banner["color"], 2)
 
             else:
                 # ＝ トレーニングルームモード（椅子検知 ＋ 座り判定）＝
@@ -791,12 +1345,12 @@ def camera_processing_loop():
 
                 # 2. 椅子と人（骨格つき）を検出
                 detected_seats = []
-                seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, verbose=False)[0]
+                seat_det = room_model(frame, classes=SEAT_CLASSES, conf=ROOM_CONF, imgsz=YOLO_IMGSZ, verbose=False)[0]
                 if seat_det.boxes is not None and len(seat_det.boxes) > 0:
                     detected_seats = list(seat_det.boxes.xyxy.cpu().numpy())
 
                 persons = []
-                pose_det = pose_model(frame, conf=0.3, verbose=False)[0]
+                pose_det = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
                 if pose_det.boxes is not None and len(pose_det.boxes) > 0 and pose_det.keypoints is not None:
                     p_boxes = pose_det.boxes.xyxy.cpu().numpy()
                     kxy_all = pose_det.keypoints.xy.cpu().numpy()
@@ -810,11 +1364,13 @@ def camera_processing_loop():
                 # 座り判定
                 best = (False, -1.0, "no-person")
                 sit_box = None
+                sit_kxy = sit_kcf = None
                 for box, kxy_i, kcf_i in persons:
                     res = evaluate_sitting(box, kxy_i, kcf_i, seat_boxes)
                     if (res[0], res[1]) > (best[0], best[1]):
                         best = res
                         sit_box = box
+                        sit_kxy, sit_kcf = kxy_i, kcf_i
                 is_sitting, overlap, why = best
                 active_machine_key = "bench_press"
 
@@ -834,25 +1390,69 @@ def camera_processing_loop():
                 estimated_by_clothes = False
                 if (detected_user_name == "Guest" and is_sitting and sit_box is not None
                         and not identity_holder.has_identity(current_time)):
-                    fb_name, fb_id = state.match_recent_entry_by_feature(sit_box, frame, current_time)
+                    fb_name, fb_id = state.match_recent_entry_by_feature(sit_kxy, sit_kcf, frame, current_time)
                     if fb_name is not None:
                         detected_user_name = fb_name
                         detected_member_id = fb_id
                         estimated_by_clothes = True
-                        print(f"👕 【服装から推定】 顔が見えないため入口の服装記録から {fb_name} と推定しました")
+                        print(f"👕 【服装から推定】 顔が見えないため入口の服装記録から {fb_name} と推定しました"
+                              f"（色の差 {state.last_clothes_dist:.2f} / 上限 {CLOTHES_MAX_DIST}）")
+
+                # 服装で推定した本人は、保持中も服装を確認し続ける。着替えなどで入口の記録と合わなくなったら推定を解除する
+                recheck_d = None
+                if (CLOTHES_FALLBACK_ENABLED and identity_holder.estimated and identity_holder.has_identity(current_time)
+                        and not estimated_by_clothes and detected_user_name == "Guest" and sit_box is not None):
+                    recheck_d = state.clothes_distance_to_member(identity_holder.member_id, sit_kxy, sit_kcf, frame, current_time)
+                    if recheck_d is not None and recheck_d >= CLOTHES_MAX_DIST:
+                        if clothes_mismatch_since is None:
+                            clothes_mismatch_since = current_time
+                        elif current_time - clothes_mismatch_since >= CLOTHES_RECHECK_SECONDS:
+                            print(f"👕 【推定を解除】 服装が入口の記録と合わなくなりました"
+                                  f"（色の差 {recheck_d:.1f} ≥ 上限 {CLOTHES_MAX_DIST}）")
+                            identity_holder.name = identity_holder.member_id = None
+                            identity_holder.estimated = False
+                            clothes_mismatch_since = None
+                    else:
+                        clothes_mismatch_since = None
+                else:
+                    clothes_mismatch_since = None
+
+                if estimated_by_clothes:
+                    clothes_txt = f"USED d={state.last_clothes_dist:.1f}"
+                elif detected_user_name != "Guest":
+                    clothes_txt = "skip (face matched)"
+                elif not is_sitting or sit_box is None:
+                    clothes_txt = "skip (not sitting)"
+                elif identity_holder.has_identity(current_time):
+                    clothes_txt = (f"held by clothes d={recheck_d:.1f}" if recheck_d is not None
+                                   else "skip (identity held)")
+                else:
+                    clothes_txt = state.clothes_diag
+                put_text(frame, f"clothes: {clothes_txt} (max {CLOTHES_MAX_DIST:.0f})",
+                         (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
+
+                # 服の色を測っている範囲（水色の枠）と色の見本を出す。NOW=いま測った色、IDつき=入口で記録した色。
+                # 見本が肌色や背景の色なら、測る場所がずれている。
+                now_feat = get_box_color_feature(frame, sit_kxy, sit_kcf) if sit_kxy is not None else None
+                roi_box = clothes_roi(frame.shape, sit_kxy, sit_kcf) if sit_kxy is not None else None
+                if roi_box is not None:
+                    cv2.rectangle(frame, (roi_box[0], roi_box[1]), (roi_box[2], roi_box[3]), (255, 255, 0), 2)
+                draw_swatch(frame, 0, "NOW", now_feat)
+                for n, e in enumerate(list(state.recent_entries)[-3:], start=1):
+                    draw_swatch(frame, n, e["member_id"], e["color_feat"])
 
                 # デバッグ表示：人=緑、椅子=オレンジ、腰・膝=赤い点
                 for box, kxy_i, kcf_i in persons:
-                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+                    cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), THICK)
                     for idx in (11, 12, 13, 14):
                         if kcf_i[idx] >= KP_CONF:
-                            cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), 4, (0, 0, 255), -1)
+                            cv2.circle(frame, (int(kxy_i[idx][0]), int(kxy_i[idx][1])), int(4 * UI), (0, 0, 255), -1)
                 for m in seat_memory:
                     b = m["box"]
                     color = (0, 165, 255) if m["live"] else (0, 255, 255)
-                    cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, 2)
+                    cv2.rectangle(frame, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, THICK)
                 n_live = sum(1 for m in seat_memory if m["live"])
-                cv2.putText(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
+                put_text(frame, f"persons={len(persons)} seats={n_live}(+{len(seat_memory) - n_live} remembered) "
                                    f"overlap={max(overlap, 0.0):.2f} why={why}",
                             (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
@@ -878,7 +1478,7 @@ def camera_processing_loop():
                 else:
                     id_source = "face"
                 sim_txt = f"{best_face_sim:.2f}" if best_face_sim is not None else "-"
-                cv2.putText(frame, f"face={face_note} faces={len(faces)} best={sim_txt}/{ROOM_FACE_THRESHOLD:.2f} "
+                put_text(frame, f"face={face_note} faces={len(faces)} best={sim_txt}/{ROOM_FACE_THRESHOLD:.2f} "
                                    f"id={id_source} loop={loop_dt:.2f}s",
                             (20, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                 if is_sitting and current_time - last_face_log >= 3.0:
@@ -896,20 +1496,20 @@ def camera_processing_loop():
                 if confirmed:
                     state.update_machine_occupancy(active_machine_key, detected_user_name, current_time,
                                                    started_at=sit_since, member_id=detected_member_id)
-                    cv2.putText(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    put_text(frame, f"Sitting & Using: {detected_user_name}{held_mark}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 elif sitting_now:
-                    cv2.putText(frame, f"Sitting? confirming [{detected_member_id or '-'}]{held_mark} "
+                    put_text(frame, f"Sitting? confirming [{detected_member_id or '-'}]{held_mark} "
                                        f"{current_time - sit_since:.1f}/{SIT_CONFIRM_SECONDS:.1f}s",
                                 (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 else:
                     status_text = f"User: {detected_user_name}{held_mark} | Sitting: {is_sitting}"
-                    cv2.putText(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+                    put_text(frame, status_text, (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
                 state.release_idle_machines(current_time)
                 if current_time - last_push_time >= ROOM_PUSH_INTERVAL:
                     state.push_update()
                     last_push_time = current_time
-                cv2.putText(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                put_text(frame, "MODE: [ROOM (Chair Occupancy Mode)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             with render_lock:
                 current_output_frame = frame.copy()
@@ -964,7 +1564,7 @@ def api_register(data: RegisterRequest):
 
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-        face_app.prepare(ctx_id=0, det_size=(640, 640))
+        face_app.prepare(ctx_id=0, det_size=(1280, 1280))
         faces = face_app.get(frame)
 
         if len(faces) == 0:
@@ -1026,7 +1626,7 @@ async def video_feed():
             with render_lock:
                 frame_to_send = current_output_frame
             if frame_to_send is not None:
-                ret, buffer = cv2.imencode('.jpg', frame_to_send)
+                ret, buffer = cv2.imencode('.jpg', frame_to_send, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
                 if ret:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
