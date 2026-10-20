@@ -281,6 +281,38 @@ def notify_overtime_async(member_id, machine_key, start, end, duration):
     threading.Thread(target=worker, daemon=True).start()
 
 # =========================================================================
+# 💾 データベース書き込みのキュー化（ロック競合防止用）
+# =========================================================================
+db_write_queue = Queue()
+
+def db_writer_worker():
+    """データベースへの書き込みを1つのスレッドで直列化して実行する常駐ワーカー"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    while True:
+        try:
+            task = db_write_queue.get()
+            if task is None:
+                break
+            sql, params = task
+            cursor.execute(sql, params)
+            conn.commit()
+            db_write_queue.task_done()
+        except Exception as e:
+            print(f"⚠️ DB書き込みエラー: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+
+# アプリ起動時に専用スレッドを開始
+threading.Thread(target=db_writer_worker, daemon=True).start()
+
+def execute_db_write(sql, params=()):
+    """データベースへ書き込む際は、この関数を呼び出す（キューに追加する）"""
+    db_write_queue.put((sql, params))
+
+# =========================================================================
 # 💾 システム状態管理（ステート）用クラス
 # =========================================================================
 class SystemStateManager:
@@ -482,14 +514,11 @@ class SystemStateManager:
             else:
                 self.out_count += 1
             
-            conn = sqlite3.connect(DB_PATH)
-            conn.cursor().execute(
+            execute_db_write(
                 "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (?, ?, ?, ?, ?)",
                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, member_id, is_alert, note)
-            )
-            conn.commit()
-            conn.close()
-            self.push_update()
+           )
+        self.push_update()
 
     def _log_occupancy(self, m_key, m_state):
         if m_state["user"] == "-" or m_state["start_time"] is None or m_state["duration"] <= 0:
@@ -498,14 +527,11 @@ class SystemStateManager:
         end = datetime.fromtimestamp(m_state["start_time"] + m_state["duration"])
         who = m_state.get("member_id") or m_state["user"]
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.cursor().execute(
+            execute_db_write(
                 "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration, machine) VALUES (?, ?, ?, ?, ?)",
                 (who, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"),
-                 float(m_state["duration"]), m_key)
+                float(m_state["duration"]), m_key)
             )
-            conn.commit()
-            conn.close()
         except Exception as e:
             print(f"⚠️ 占有ログの保存に失敗: {e}")
         if m_state["duration"] > MACHINE_LIMITS[m_key]["limit"]:
@@ -1564,7 +1590,7 @@ def api_register(data: RegisterRequest):
 
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
-        face_app.prepare(ctx_id=0, det_size=(1280, 1280))
+        face_app.prepare(ctx_id=0, det_size=(640, 640))
         faces = face_app.get(frame)
 
         if len(faces) == 0:
@@ -1602,14 +1628,11 @@ def api_register(data: RegisterRequest):
             server.sendmail(SENDER_EMAIL, email, msg.as_string())
 
         # メール送信に成功してから会員を登録する（失敗時に「登録済みなのにQRが届かない」状態を防ぐ）
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
+        # 直接 connect せず、execute_db_write に置き換える
+        execute_db_write(
             "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (?, ?, ?, ?, ?)",
             (member_id, data.name, email, qr_token, sqlite3.Binary(face_embedding))
         )
-        conn.commit()
-        conn.close()
         member_cache.invalidate()
 
         return {"status": "success", "member_id": member_id}
