@@ -527,6 +527,7 @@ class SystemStateManager:
         end = datetime.fromtimestamp(m_state["start_time"] + m_state["duration"])
         who = m_state.get("member_id") or m_state["user"]
         try:
+            # キュー経由の安全な書き込みに置き換え
             execute_db_write(
                 "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration, machine) VALUES (?, ?, ?, ?, ?)",
                 (who, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"),
@@ -536,7 +537,7 @@ class SystemStateManager:
             print(f"⚠️ 占有ログの保存に失敗: {e}")
         if m_state["duration"] > MACHINE_LIMITS[m_key]["limit"]:
             notify_overtime_async(m_state.get("member_id"), m_key, start, end, m_state["duration"])
-
+            
     def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None, member_id=None):
         with self._lock:
             for m_key in self.machine_states.keys():
