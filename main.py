@@ -112,6 +112,7 @@ def put_text(img, text, org, font, fs, color, th=2, hud=True):
     人ボックスに付けるラベルなど、実座標を渡す場合は hud=False にする。"""
     x, y = (int(org[0] * UI), int(org[1] * UI)) if hud else (int(org[0]), int(org[1]))
     cv2.putText(img, text, (x, y), font, fs * UI, color, max(1, int(round(th * UI))))
+    
 
 def open_camera():
     cap = cv2.VideoCapture(CAMERA_ID)
@@ -383,62 +384,69 @@ class SystemStateManager:
         with self._lock:
             return self.inside_members.pop(member_id, None) is not None
 
-    def add_recent_entry(self, member_id, name, color_feat, current_time):
+    def add_recent_entry(self, member_id, name, color_feat, body_ratio, current_time): # ← 引数に body_ratio を追加
         with self._lock:
             self.recent_entries = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
             self.recent_entries.append({
                 "member_id": member_id,
                 "name": name,
                 "color_feat": color_feat,
+                "body_ratio": body_ratio, # ← 追加
                 "time": current_time
             })
 
     def match_recent_entry_by_feature(self, kxy, kconf, frame, current_time):
-        """顔が見えない人を、入口で記録した服装から推定する。
-        ・上半身と下半身の色分布が、どちらも十分近い会員だけを候補にする。
-        ・候補が複数いて1位と2位の差が小さいときは、曖昧なので決めない。"""
+        """顔が見えない人を、入口で記録した服装と体格から推定する。"""
         if not CLOTHES_FALLBACK_ENABLED:
             self.clothes_diag = "off"
             return None, None
         with self._lock:
-            # 古い記録は、新しい入館者がいなくても照合の時点で候補から外す
             candidates = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
             if not candidates:
-                self.clothes_diag = "no clothes record (not captured at entrance, or >15min)"
+                self.clothes_diag = "no clothes record"
                 return None, None
 
-            target = get_box_color_feature(frame, kxy, kconf)
-            if target is None:
-                self.clothes_diag = "no torso color (shoulders not seen / mostly skin)"
+            target_color = get_box_color_feature(frame, kxy, kconf)
+            target_ratio = get_body_proportion_feature(kxy, kconf)
+            
+            if target_color is None or target_ratio is None:
+                self.clothes_diag = "no torso/pose for feature"
                 return None, None
 
-            # 会員ごとに一番近い記録を使う（同じ人が複数回入館していても、1位と2位の比較に影響させない）
             per_member = {}
             for entry in candidates:
-                d = clothes_distance(entry["color_feat"], target)
+                # 1. 服の色の差
+                d_color = clothes_distance(entry["color_feat"], target_color)
+                
+                # 2. 体格（骨格比率）の差
+                entry_ratio = entry.get("body_ratio")
+                d_ratio = abs(entry_ratio - target_ratio) if entry_ratio is not None else 0.0
+                
+                # 体格が違いすぎる場合は除外
+                if d_ratio > 0.15:
+                    continue
+                    
                 cur = per_member.get(entry["member_id"])
-                if cur is None or d < cur[0]:
-                    per_member[entry["member_id"]] = (d, entry)
+                if cur is None or d_color < cur[0]:
+                    per_member[entry["member_id"]] = (d_color, entry)
+                    
+            if not per_member:
+                self.clothes_diag = "rejected by body ratio mismatch"
+                return None, None
+
             ranked = sorted(per_member.values(), key=lambda x: x[0])
             best_d, best = ranked[0]
             second_d = ranked[1][0] if len(ranked) > 1 else None
 
-            self.clothes_diag = (f"cand={len(ranked)} best={best['member_id']} d={best_d:.1f}"
-                                 + (f" 2nd={second_d:.1f}" if second_d is not None else ""))
-            reason = None
+            # 判定ロジック（上限や2位との差のチェック）
             if best_d >= CLOTHES_MAX_DIST:
-                reason = f"服装が違う（最小の差 {best_d:.2f} ≥ 上限 {CLOTHES_MAX_DIST}）"
+                self.clothes_diag = f"color dist too large ({best_d:.1f})"
+                return None, None
             elif second_d is not None and (second_d - best_d) < CLOTHES_MIN_MARGIN:
-                reason = f"服装が似た候補が複数いて決められない（差 {best_d:.2f} / {second_d:.2f}）"
-
-            if reason is not None:
-                self.clothes_diag += " -> reject"
-                if current_time - self._clothes_log_time >= 3.0:   # 毎フレームは出さない
-                    print(f"👕 服装による推定は見送り：{reason}")
-                    self._clothes_log_time = current_time
+                self.clothes_diag = "too close to 2nd candidate"
                 return None, None
 
-            self.clothes_diag += " -> match"
+            self.clothes_diag = f"match! d={best_d:.1f}"
             self.last_clothes_dist = best_d
             return best["name"], best["member_id"]
 
@@ -750,6 +758,19 @@ def get_box_color_feature(frame, kxy, kconf):
         return None
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)[keep].astype(np.float32)
     return np.median(lab, axis=0)
+
+def get_body_proportion_feature(kxy, kconf):
+    """骨格データから体格の比率（肩幅÷胴の長さなど）を計算する"""
+    if kxy is None or kconf is None:
+        return None
+    # 肩（5, 6）と腰（11, 12）の信頼度が十分かチェック
+    if kconf[5] < KP_CONF or kconf[6] < KP_CONF or kconf[11] < KP_CONF or kconf[12] < KP_CONF:
+        return None
+    shoulder_w = abs(float(kxy[5][0]) - float(kxy[6][0]))
+    torso_h = abs(float((kxy[5][1] + kxy[6][1]) / 2) - float((kxy[11][1] + kxy[12][1]) / 2))
+    if torso_h < 1.0:
+        return None
+    return shoulder_w / torso_h
 
 def lab_to_bgr(lab):
     bgr = cv2.cvtColor(np.uint8([[np.clip(lab, 0, 255)]]), cv2.COLOR_LAB2BGR)[0][0]
@@ -1092,21 +1113,17 @@ def camera_processing_loop():
     identity_holder = IdentityHolder()
     clothes_mismatch_since = None   # 服装で推定した本人の服が合わなくなり始めた時刻
 
-    def entrance_clothes_feature(frame, box, member_id):
-        """入館した人の服の色（胸まわり）を測る。骨格推定を1回だけ実行する。測れなければ None。"""
+    def entrance_body_and_clothes_feature(frame, box, member_id):
         try:
             res = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
             kxy, kcf = find_pose_for_box(res, box)
-            feat = get_box_color_feature(frame, kxy, kcf)
+            color_feat = get_box_color_frame = get_box_color_feature(frame, kxy, kcf) if 'get_box_color_feature' in globals() else get_box_color_feature(frame, kxy, kcf)
+            color_feat = get_box_color_feature(frame, kxy, kcf)
+            body_ratio = get_body_proportion_feature(kxy, kcf)
         except Exception as e:
-            print(f"⚠️ 入口の服装の測定に失敗: {e}")
-            return None
-        if feat is None:
-            print(f"👕 入口の服装を測れませんでした（肩が写っていない、または胸まわりが肌色ばかり）: {member_id}")
-        else:
-            b, g, r = lab_to_bgr(feat)
-            print(f"👕 入口の服装を記録: {member_id} 色(RGB)=({r},{g},{b})")
-        return feat
+            return None, None
+        return color_feat, body_ratio
+    
     sit_log = {"key": None, "time": 0.0}
     entrance_session = None   # 入口：QRを読んだ会員1人分の認証セッション
     auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}   # 認証NG・失効・入館OKの一時表示
@@ -1179,18 +1196,19 @@ def camera_processing_loop():
                     if ev == "authed":
                         print(f"✅ 【顔認証OK】 {sess.label}（類似度 {sess.match_sim:.2f}）… このまま線を越えると入館になります")
                         if sess.last_box is not None:
-                            sess.clothes_feat = entrance_clothes_feature(frame, sess.last_box, sess.member_id)
+                            sess.clothes_feat = entrance_body_and_clothes_feature(frame, sess.last_box, sess.member_id)
                     elif ev == "crossed":
                         print(f"{member_name}：認証成功（類似度: {sess.match_sim:.2f}）… 顔認証後に線の向こう側で確認")
                         state.register_pass("IN", sess.label, 0,
                                             note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
                         state.mark_inside(sess.member_id)
-                        feat = (entrance_clothes_feature(frame, sess.last_box, sess.member_id)
-                                if sess.last_box is not None else None)
+                        feat = (entrance_body_and_clothes_feature(frame, sess.last_box, sess.member_id)
+                        if sess.last_box is not None else None)
                         if feat is None:
                             feat = getattr(sess, "clothes_feat", None)   # 顔認証OKの時点で測れていれば、それを使う
                         if feat is not None:
-                            state.add_recent_entry(sess.member_id, member_name, feat, current_time)
+                            state.add_recent_entry(sess.member_id, member_name, color_feat, body_ratio, current_time)
+
                         auth_banner.update(text=f"IN OK: {sess.member_id}", color=(0, 255, 0),
                                            until=current_time + ENTRANCE_BANNER_SECONDS)
                     elif ev == "expired":
@@ -1294,9 +1312,9 @@ def camera_processing_loop():
                                     print(f"{member_name}：認証成功（類似度: {best_sim:.2f}）")
                                     state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
                                     state.mark_inside(state.last_member_id)
-                                    color_feat = entrance_clothes_feature(frame, box, state.last_member_id)
-                                    if color_feat is not None:
-                                        state.add_recent_entry(state.last_member_id, member_name, color_feat, current_time)
+                                    color_feat, body_ratio = entrance_body_and_clothes_feature(frame, box, state.last_member_id)
+                                    if color_feat is not None and body_ratio is not None:
+                                        state.add_recent_entry(state.last_member_id, member_name, color_feat, body_ratio, current_time)
                                 else:
                                     print(f"未登録または別人：認証失敗（理由: {reason}）")
                                     state.set_alert(True)
@@ -1457,6 +1475,11 @@ def camera_processing_loop():
                     clothes_txt = state.clothes_diag
                 put_text(frame, f"clothes: {clothes_txt} (max {CLOTHES_MAX_DIST:.0f})",
                          (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
+                # --- 体格（body ratio）の表示を追加 ---
+                current_body_ratio = get_body_proportion_feature(sit_kxy, sit_kcf) if sit_kxy is not None else None
+                ratio_txt = f"{current_body_ratio:.2f}" if current_body_ratio is not None else "N/A"
+                put_text(frame, f"body ratio: {ratio_txt} (max diff 0.15)",
+                         (20, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
 
                 # 服の色を測っている範囲（水色の枠）と色の見本を出す。NOW=いま測った色、IDつき=入口で記録した色。
                 # 見本が肌色や背景の色なら、測る場所がずれている。
