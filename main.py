@@ -1721,6 +1721,118 @@ async def ws_broadcast_loop():
             print(f"⚠️ WebSocket配信でエラー（配信は継続します）: {e}")
         await asyncio.sleep(0.1)
 
+# =========================================================================
+# 📊 会員有料度（貢献度）スコア関連のルーティング・API
+# =========================================================================
+
+def calculate_member_score(conn, member_id):
+    """会員1人あたりの有料度・貢献度スコア（0〜100点）および内訳を計算する（共連れ・超過の減点対応）"""
+    cursor = conn.cursor()
+    escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%({escaped})"
+
+    # 1. 正常な来館回数 (INログかつ is_alert = 0)
+    cursor.execute(
+        "SELECT COUNT(*) FROM passing_logs WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'",
+        (pattern,)
+    )
+    normal_visit_count = cursor.fetchone()[0] or 0
+
+    # 2. 共連れ・不正入館などのアラート回数 (is_alert = 1)
+    cursor.execute(
+        "SELECT COUNT(*) FROM passing_logs WHERE direction = 'IN' AND is_alert = 1 AND member_id LIKE ? ESCAPE '\\'",
+        (pattern,)
+    )
+    alert_count = cursor.fetchone()[0] or 0
+
+    # 3. マシン利用データの集計（超過回数のカウント）
+    cursor.execute(
+        "SELECT duration, machine FROM occupancy_logs WHERE member_id = ?",
+        (member_id,)
+    )
+    usages = cursor.fetchall()
+    total_duration_sec = sum(u[0] or 0 for u in usages)
+    
+    overtime_count = 0
+    for dur, m_key in usages:
+        limit = MACHINE_LIMITS.get(m_key, {}).get("limit", 0)
+        if limit > 0 and (dur or 0) > limit:
+            overtime_count += 1
+
+    # --- スコア計算 ---
+    # (a) 来館スコア: 1回につき5pt (最大40pt)
+    visit_score = min(40, normal_visit_count * 5)
+
+    # (b) 利用時間スコア: 10分(600秒)につき5pt (最大40pt)
+    usage_score = min(40, int((total_duration_sec / 600) * 5))
+
+    # (c) ペナルティ控除
+    # - 時間超過 1回につき -10pt
+    # - 共連れ・不正アラート 1回につき -20pt
+    penalty_points = (overtime_count * 10) + (alert_count * 20)
+
+    # 総合スコア（0点〜100点の間に収める）
+    base_score = visit_score + usage_score
+    total_score = max(0, min(100, base_score - penalty_points))
+
+    # ランク判定
+    if total_score >= 80:
+        rank = "S"
+    elif total_score >= 60:
+        rank = "A"
+    elif total_score >= 40:
+        rank = "B"
+    else:
+        rank = "C"
+
+    return {
+        "total_score": total_score,
+        "rank": rank,
+        "visit_count": normal_visit_count,
+        "alert_count": alert_count,          # 共連れ等の検知回数
+        "total_duration_fmt": _fmt_seconds(total_duration_sec),
+        "overtime_count": overtime_count,    # 時間超過回数
+        "penalty_points": penalty_points     # 合計ペナルティ減点
+    }
+
+
+@app.get("/admin/scores", response_class=HTMLResponse)
+def get_admin_scores_page(request: Request):
+    """有料度スコア一覧ページ表示"""
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    return templates.TemplateResponse(request, "scores.html", {})
+
+
+@app.get("/api/admin/scores")
+def api_get_member_scores(request: Request):
+    """全会員の有料度スコアランキング取得API"""
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT member_id, name, email FROM members")
+    members = cursor.fetchall()
+
+    score_list = []
+    for m in members:
+        score_info = calculate_member_score(conn, m["member_id"])
+        score_list.append({
+            "member_id": m["member_id"],
+            "name": m["name"],
+            "email": m["email"],
+            **score_info
+        })
+
+    conn.close()
+
+    # スコアが高い順に並び替え
+    score_list.sort(key=lambda x: x["total_score"], reverse=True)
+
+    return {"status": "success", "scores": score_list}
+
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(ws_broadcast_loop())

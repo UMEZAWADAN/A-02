@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>CHOCOZAP SECURITY - MEMBER SCORES</title>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --surface-card: #f7f7f9;
+            --surface-alt: #eceef2;
+            --border-color: #e4e4e9;
+            --border-active: #D8FB54;
+            
+            --text-main: #0d0d0f;
+            --text-muted: #71717a;
+            
+            --accent-lime: #D8FB54;
+            --accent-lime-dark: #b5d432;
+            --danger-color: #ff2a5f;
+        }
+
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding-top: 160px;
+            padding-left: 20px;
+            padding-right: 20px;
+            box-sizing: border-box;
+            letter-spacing: -0.02em;
+            -webkit-font-smoothing: antialiased;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .page-content {
+            flex: 1;
+            max-width: 1024px;
+            margin: 0 auto;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 40px 0;
+        }
+
+        /* 共通ヘッダー */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(40px) saturate(250%);
+            -webkit-backdrop-filter: blur(40px) saturate(250%);
+            border-bottom: 1px solid rgba(228, 228, 233, 0.15);
+            padding: 20px 20px 16px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header-brand h1 {
+            font-size: 2.4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            margin: 0 0 12px 0;
+            letter-spacing: 0.08em;
+            text-align: center;
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            color: transparent;
+            -webkit-text-stroke: 1.5px var(--text-main);
+        }
+        
+        .header-brand h1 span {
+            background: var(--accent-lime);
+            padding: 0 10px;
+            color: #000;
+            -webkit-text-stroke: 0px transparent;
+            border-radius: 2px;
+            display: inline-block;
+        }
+
+        .header-brand h1 a {
+            color: inherit;
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+        .header-brand h1 a:hover {
+            color: var(--accent-lime);
+        }
+
+        .nav-container {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .nav-btn {
+            background: rgba(236, 238, 242, 0.3);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            color: var(--text-main);
+            padding: 8px 20px;
+            text-decoration: none;
+            border-radius: 2px;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid rgba(228, 228, 233, 0.3);
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            font-family: monospace;
+            position: relative;
+        }
+        .nav-btn:hover {
+            border-color: var(--text-main);
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .nav-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 4px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background-color: transparent;
+            transition: background-color 0.2s ease;
+        }
+        .nav-btn:hover::after {
+            background-color: var(--accent-lime);
+        }
+
+        .nav-btn-logout {
+            border-color: rgba(255, 42, 95, 0.4);
+            color: var(--danger-color);
+        }
+        .nav-btn-logout:hover {
+            background: rgba(255, 42, 95, 0.1);
+            border-color: var(--danger-color);
+        }
+        .nav-btn-logout:hover::after {
+            background-color: var(--danger-color);
+        }
+
+        /* ヒーローセクション */
+        .hero-section {
+            margin-bottom: 30px;
+        }
+        .hero-section h2 {
+            font-family: monospace;
+            font-size: 1.5rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 10px;
+        }
+        .hero-section p {
+            color: var(--text-muted);
+            font-size: 0.90rem;
+            font-family: monospace;
+        }
+
+        /* テーブルスタイル */
+        .table-container {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            overflow-x: auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.02);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-family: monospace;
+        }
+        th, td {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.85rem;
+        }
+        th {
+            background-color: var(--surface-alt);
+            font-weight: 900;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        tr:hover td {
+            background-color: rgba(0,0,0,0.01);
+        }
+
+        /* ランクバッジ */
+        .rank-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 2px;
+            font-weight: 900;
+            text-align: center;
+            font-size: 0.8rem;
+        }
+        .rank-S { background-color: var(--accent-lime); color: #000; border: 1px solid #b5d432; }
+        .rank-A { background-color: #e4e4e9; color: #000; }
+        .rank-B { background-color: #eceef2; color: #71717a; }
+        .rank-C { background-color: rgba(255, 42, 95, 0.1); color: var(--danger-color); }
+
+        /* スコアバー */
+        .score-bar-bg {
+            width: 100px;
+            height: 8px;
+            background: var(--border-color);
+            border-radius: 4px;
+            overflow: hidden;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        .score-bar-fill {
+            height: 100%;
+            background: var(--text-main);
+        }
+
+        /* フッター */
+        .site-footer {
+            margin-top: auto;
+            margin-left: -20px;
+            margin-right: -20px;
+            padding: 32px 20px 20px 20px;
+            border-top: 1px solid var(--text-main);
+            background: var(--bg-color);
+            box-sizing: border-box;
+        }
+
+        .footer-inner {
+            max-width: 1024px;
+            margin: 0 auto;
+        }
+
+        .footer-nav {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px 28px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .footer-nav a {
+            color: var(--text-main);
+            text-decoration: none;
+            padding: 4px 0;
+            border-bottom: 2px solid transparent;
+            transition: border-color 0.2s ease;
+        }
+        .footer-nav a:hover,
+        .footer-nav a.current {
+            border-bottom-color: var(--accent-lime);
+        }
+        .footer-nav a.logout {
+            color: var(--danger-color);
+        }
+        .footer-nav a.logout:hover {
+            border-bottom-color: var(--danger-color);
+        }
+
+        .footer-wordmark {
+            display: block;
+            max-width: 380px;
+            margin: 28px auto 12px auto;
+            text-decoration: none;
+        }
+        .footer-wordmark svg {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        .footer-wordmark text {
+            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
+            font-weight: 900;
+            fill: transparent;
+            stroke: var(--text-main);
+            stroke-width: 3;
+            transition: fill 0.3s ease;
+        }
+        .footer-wordmark:hover text {
+            fill: var(--accent-lime);
+        }
+
+        .footer-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        .footer-bottom a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+        }
+        .footer-bottom a:hover {
+            color: var(--text-main);
+        }
+    </style>
+</head>
+<body>
+
+    <header class="site-header">
+        <div class="header-brand">
+            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP <span>SECURITY</span></a></h1>
+        </div>
+        <nav class="nav-container">
+            <a href="/" class="nav-btn">HOME</a>
+            <a href="/live" class="nav-btn">LIVE MONITOR</a>
+            <a href="/admin/logs" class="nav-btn">ACCESS LOGS</a>
+            <a href="/admin/members" class="nav-btn">MEMBERS</a>
+            <a href="/admin/scores" class="nav-btn" style="border-color: var(--text-main);">SCORES</a>
+            <a href="/admin/logout" class="nav-btn nav-btn-logout">LOGOUT</a>
+        </nav>
+    </header>
+
+    <div class="page-content">
+        <div class="hero-section">
+            <h2>MEMBER LOYALTY SCORES</h2>
+            <p>// RANKING BASED ON FREQUENCY, DURATION, AND PENALTIES</p>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>RANK</th>
+                        <th>NAME / ID</th>
+                        <th>SCORE</th>
+                        <th>VISITS</th>
+                        <th>TOTAL TIME</th>
+                        <th>PENALTIES (OVERTIME / ALERT)</th>
+                    </tr>
+                </thead>
+                <tbody id="score-table-body">
+                    <tr><td colspan="6" style="text-align:center; color: var(--text-muted);">LOADING...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <footer class="site-footer">
+        <div class="footer-inner">
+            <nav class="footer-nav">
+                <a href="/">HOME</a>
+                <a href="/live">LIVE MONITOR</a>
+                <a href="/admin/logs">ACCESS LOGS</a>
+                <a href="/admin/members">MEMBERS</a>
+                <a href="/admin/scores" class="current" aria-current="page">SCORES</a>
+                <a href="/admin/logout" class="logout">LOGOUT</a>
+            </nav>
+
+            <a class="footer-wordmark" href="/" aria-label="CHOCOZAP SECURITY">
+                <svg viewBox="0 0 1000 118" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
+                    <text x="0" y="112" font-size="130" textLength="1000" lengthAdjust="spacingAndGlyphs">CHOCOZAP SECURITY</text>
+                </svg>
+            </a>
+
+            <div class="footer-bottom">
+                <div>&copy; 2026 CHOCOZAP SECURITY</div>
+                <a href="#" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">BACK TO TOP &uarr;</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        async function loadScores() {
+            try {
+                const res = await fetch('/api/admin/scores');
+                const data = await res.json();
+                if (data.status !== 'success') return;
+
+                const tbody = document.getElementById('score-table-body');
+                tbody.innerHTML = '';
+
+                if (data.scores.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-muted);">NO MEMBERS REGISTERED</td></tr>';
+                    return;
+                }
+
+                data.scores.forEach((item, index) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td><span class="rank-badge rank-${item.rank}">${item.rank}</span> <span style="font-size:0.75rem; color:var(--text-muted);">#${index + 1}</span></td>
+                        <td>
+                            <strong>${item.name}</strong><br>
+                            <span style="font-size: 0.75rem; color: var(--text-muted);">${item.member_id}</span>
+                        </td>
+                        <td>
+                            <div class="score-bar-bg"><div class="score-bar-fill" style="width: ${item.total_score}%;"></div></div>
+                            <strong>${item.total_score}</strong> / 100
+                        </td>
+                        <td>${item.visit_count} 回</td>
+                        <td>${item.total_duration_fmt}</td>
+                        <td>
+                            <span style="color: ${item.overtime_count > 0 ? 'var(--danger-color)' : 'inherit'};">
+                                超過: ${item.overtime_count}回
+                            </span> / 
+                            <span style="color: ${item.alert_count > 0 ? 'var(--danger-color)' : 'inherit'};">
+                                共連れ: ${item.alert_count}回
+                            </span>
+                            <span style="font-size: 0.75rem; color: var(--text-muted);">(-${item.penalty_points}pt)</span>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error("スコアデータの取得に失敗:", err);
+                document.getElementById('score-table-body').innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--danger-color);">FAILED TO LOAD SCORES</td></tr>';
+            }
+        }
+
+        loadScores();
+    </script>
+</body>
+</html>
