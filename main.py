@@ -1202,12 +1202,22 @@ def camera_processing_loop():
                         state.register_pass("IN", sess.label, 0,
                                             note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
                         state.mark_inside(sess.member_id)
-                        feat = (entrance_body_and_clothes_feature(frame, sess.last_box, sess.member_id)
-                        if sess.last_box is not None else None)
-                        if feat is None:
-                            feat = getattr(sess, "clothes_feat", None)   # 顔認証OKの時点で測れていれば、それを使う
-                        if feat is not None:
+                        # 服の色と体格を測る。通過時点で測れなければ、顔認証OKの時点で測った値を使う。
+                        # （entrance_body_and_clothes_feature は常に (色, 体格) のタプルを返すので、個別に None を確認する）
+                        if sess.last_box is not None:
+                            color_feat, body_ratio = entrance_body_and_clothes_feature(frame, sess.last_box, sess.member_id)
+                        else:
+                            color_feat, body_ratio = None, None
+                        early_color, early_ratio = getattr(sess, "clothes_feat", (None, None))
+                        if color_feat is None:
+                            color_feat = early_color
+                        if body_ratio is None:
+                            body_ratio = early_ratio
+                        # 色は必須。体格は None でも記録する（照合側は体格が None なら体格の比較を省略する）
+                        if color_feat is not None:
                             state.add_recent_entry(sess.member_id, member_name, color_feat, body_ratio, current_time)
+                        else:
+                            print(f"⚠️ 【服装の記録なし】 {sess.label}：入口で服の色を測れなかったため、顔が見えない場合の補助認証は使えません")
 
                         auth_banner.update(text=f"IN OK: {sess.member_id}", color=(0, 255, 0),
                                            until=current_time + ENTRANCE_BANNER_SECONDS)
