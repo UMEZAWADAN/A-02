@@ -10,7 +10,8 @@ import numpy as np
 import os
 import re
 import smtplib
-import sqlite3
+import pymysql
+import pymysql.cursors
 import threading
 import time
 import traceback
@@ -39,7 +40,27 @@ last_detected_qr = "" # 直近のQRコードを保持する変数
 # =========================================================================
 # ⚙️ システム設定値（調整可能）
 # =========================================================================
-DB_PATH = "gym_security.db"
+# MySQL 接続設定（環境変数で上書きできる。パスワードはコードに直接書かないこと）
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_NAME = os.getenv("DB_NAME", "gym_security")
+DB_CONFIG = dict(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD,
+                 database=DB_NAME, charset="utf8mb4")
+
+def get_conn(dict_cursor=False):
+    """MySQL への接続を新しく開く。dict_cursor=True なら行を row["name"] のように読める。"""
+    return pymysql.connect(
+        **DB_CONFIG,
+        cursorclass=pymysql.cursors.DictCursor if dict_cursor else pymysql.cursors.Cursor,
+    )
+
+def _exec(conn, sql, params=()):
+    """conn.execute() の代わり（pymysql の接続には execute が無いため）。カーソルを返す。"""
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    return cur
 DUPLICATE_QR_WINDOW = 5.0
 STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（既定の95より少し軽くする）
 CO_TRAILING_WINDOW = 10.0
@@ -145,59 +166,85 @@ class AdminAuthRequest(BaseModel):
 # =========================================================================
 # 💾 データベース自動初期化
 # =========================================================================
-def init_database():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+def _ensure_database():
+    """データベース自体が無ければ作る（CREATE 権限が無い場合は何もしない）。"""
+    cfg = dict(DB_CONFIG)
+    cfg.pop("database")
+    try:
+        conn = pymysql.connect(**cfg)
+        try:
+            conn.cursor().execute(
+                f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` CHARACTER SET utf8mb4")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"⚠️ データベースの自動作成をスキップ: {e}")
 
-    cursor.execute("""
+def _ensure_column(cursor, table, column, ddl):
+    cursor.execute(
+        "SELECT COUNT(*) FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+        (table, column))
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+def init_database():
+    _ensure_database()
+    conn = get_conn()
+    cursor = conn.cursor()
+    # ID・トークン・パスワードは大文字小文字を区別して比較したいので utf8mb4_bin にする
+    BIN = "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) {BIN} UNIQUE NOT NULL,
+            password VARCHAR(255) {BIN} NOT NULL
+        ) DEFAULT CHARSET=utf8mb4
     """)
-    
+
     # 会員マスタテーブル
-    cursor.execute("""
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS members (
-            member_id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL,
-            qr_token TEXT UNIQUE NOT NULL,
+            member_id VARCHAR(32) {BIN} PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            email VARCHAR(255) NOT NULL,
+            qr_token VARCHAR(128) {BIN} UNIQUE NOT NULL,
             face_embedding BLOB
-        )
+        ) DEFAULT CHARSET=utf8mb4
     """)
-    
-    cursor.execute("""
+
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS passing_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            direction TEXT,
-            member_id TEXT,
-            is_alert INTEGER
-        )
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            timestamp VARCHAR(19),
+            direction VARCHAR(8),
+            member_id VARCHAR(255) {BIN},
+            is_alert INT,
+            note TEXT,
+            INDEX idx_passing_ts (timestamp)
+        ) DEFAULT CHARSET=utf8mb4
     """)
-    cursor.execute("""
+    cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS occupancy_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            member_id TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            duration REAL
-        )
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            member_id VARCHAR(255) {BIN},
+            start_time VARCHAR(19),
+            end_time VARCHAR(19),
+            duration DOUBLE,
+            machine VARCHAR(50),
+            INDEX idx_occupancy_member (member_id)
+        ) DEFAULT CHARSET=utf8mb4
     """)
-    # 既存のDBには machine 列が無いので、足りなければ追加する
-    cursor.execute("PRAGMA table_info(occupancy_logs)")
-    if "machine" not in [row[1] for row in cursor.fetchall()]:
-        cursor.execute("ALTER TABLE occupancy_logs ADD COLUMN machine TEXT")
-    cursor.execute("PRAGMA table_info(passing_logs)")
-    if "note" not in [row[1] for row in cursor.fetchall()]:
-        cursor.execute("ALTER TABLE passing_logs ADD COLUMN note TEXT")
+    # 以前に作った（列が足りない）テーブルにも対応
+    _ensure_column(cursor, "occupancy_logs", "machine", "VARCHAR(50)")
+    _ensure_column(cursor, "passing_logs", "note", "TEXT")
     conn.commit()
     conn.close()
 
 init_database()
-print(f">> 使用DB: {os.path.abspath(DB_PATH)}")
+print(f">> 使用DB: MySQL {DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 print(">> [1/3] YOLO（人・椅子検出）モデルを読み込み中...")
 yolo_model = None
@@ -216,9 +263,9 @@ def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
     limit = info.get("limit", 0.0)
     machine_name = info.get("name", machine_key)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         try:
-            row = conn.execute("SELECT name, email FROM members WHERE member_id = ?", (member_id,)).fetchone()
+            row = _exec(conn, "SELECT name, email FROM members WHERE member_id = %s", (member_id,)).fetchone()
         finally:
             conn.close()
     except Exception as e:
@@ -288,23 +335,23 @@ db_write_queue = Queue()
 
 def db_writer_worker():
     """データベースへの書き込みを1つのスレッドで直列化して実行する常駐ワーカー"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
     while True:
-        try:
-            task = db_write_queue.get()
-            if task is None:
-                break
-            sql, params = task
-            cursor.execute(sql, params)
-            conn.commit()
+        task = db_write_queue.get()
+        if task is None:
             db_write_queue.task_done()
+            break
+        sql, params = task
+        try:
+            conn = get_conn()
+            try:
+                conn.cursor().execute(sql, params)
+                conn.commit()
+            finally:
+                conn.close()
         except Exception as e:
             print(f"⚠️ DB書き込みエラー: {e}")
-            try:
-                conn.rollback()
-            except:
-                pass
+        finally:
+            db_write_queue.task_done()
 
 # アプリ起動時に専用スレッドを開始
 threading.Thread(target=db_writer_worker, daemon=True).start()
@@ -355,10 +402,10 @@ class SystemStateManager:
         try:
             from datetime import timedelta
             since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_conn()
             try:
-                rows = conn.execute(
-                    "SELECT timestamp, direction, member_id, is_alert FROM passing_logs WHERE timestamp >= ? ORDER BY id",
+                rows = _exec(conn, 
+                    "SELECT timestamp, direction, member_id, is_alert FROM passing_logs WHERE timestamp >= %s ORDER BY id",
                     (since,)).fetchall()
             finally:
                 conn.close()
@@ -473,10 +520,9 @@ class SystemStateManager:
 
     def process_qr(self, qr_data: str, current_time: float):
         with self._lock:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
+            conn = get_conn(dict_cursor=True)
             cursor = conn.cursor()
-            cursor.execute("SELECT member_id, name, face_embedding FROM members WHERE qr_token = ?", (qr_data,))
+            cursor.execute("SELECT member_id, name, face_embedding FROM members WHERE qr_token = %s", (qr_data,))
             member = cursor.fetchone()
             conn.close()
 
@@ -523,7 +569,7 @@ class SystemStateManager:
                 self.out_count += 1
             
             execute_db_write(
-                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (%s, %s, %s, %s, %s)",
                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, member_id, is_alert, note)
            )
         self.push_update()
@@ -537,7 +583,7 @@ class SystemStateManager:
         try:
             # キュー経由の安全な書き込みに置き換え
             execute_db_write(
-                "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration, machine) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO occupancy_logs (member_id, start_time, end_time, duration, machine) VALUES (%s, %s, %s, %s, %s)",
                 (who, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"),
                 float(m_state["duration"]), m_key)
             )
@@ -591,8 +637,7 @@ class SystemStateManager:
                 "status": st["status"]
             })
 
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        conn = get_conn(dict_cursor=True)
         cursor = conn.cursor()
         cursor.execute("SELECT timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 5")
         logs_payload = [dict(row) for row in cursor.fetchall()]
@@ -662,10 +707,9 @@ class MemberFaceCache:
 
     def _reload(self):
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_conn(dict_cursor=True)
             try:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
+                rows = _exec(conn, 
                     "SELECT member_id, name, face_embedding FROM members WHERE face_embedding IS NOT NULL"
                 ).fetchall()
             finally:
@@ -1664,8 +1708,8 @@ def api_register(data: RegisterRequest):
         # メール送信に成功してから会員を登録する（失敗時に「登録済みなのにQRが届かない」状態を防ぐ）
         # 直接 connect せず、execute_db_write に置き換える
         execute_db_write(
-            "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (?, ?, ?, ?, ?)",
-            (member_id, data.name, email, qr_token, sqlite3.Binary(face_embedding))
+            "INSERT INTO members (member_id, name, email, qr_token, face_embedding) VALUES (%s, %s, %s, %s, %s)",
+            (member_id, data.name, email, qr_token, face_embedding)
         )
         member_cache.invalidate()
 
@@ -1737,27 +1781,27 @@ async def ws_broadcast_loop():
 
 def calculate_member_score(conn, member_id):
     """会員1人あたりの有料度・貢献度スコア（0〜100点）および内訳を計算する（共連れ・超過の減点対応）"""
-    cursor = conn.cursor()
+    cursor = conn.cursor(pymysql.cursors.Cursor)
     escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%({escaped})"
 
     # 1. 正常な来館回数 (INログかつ is_alert = 0)
     cursor.execute(
-        "SELECT COUNT(*) FROM passing_logs WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'",
+        "SELECT COUNT(*) FROM passing_logs WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE %s",
         (pattern,)
     )
     normal_visit_count = cursor.fetchone()[0] or 0
 
     # 2. 共連れ・不正入館などのアラート回数 (is_alert = 1)
     cursor.execute(
-        "SELECT COUNT(*) FROM passing_logs WHERE direction = 'IN' AND is_alert = 1 AND member_id LIKE ? ESCAPE '\\'",
+        "SELECT COUNT(*) FROM passing_logs WHERE direction = 'IN' AND is_alert = 1 AND member_id LIKE %s",
         (pattern,)
     )
     alert_count = cursor.fetchone()[0] or 0
 
     # 3. マシン利用データの集計（超過回数のカウント）
     cursor.execute(
-        "SELECT duration, machine FROM occupancy_logs WHERE member_id = ?",
+        "SELECT duration, machine FROM occupancy_logs WHERE member_id = %s",
         (member_id,)
     )
     usages = cursor.fetchall()
@@ -1820,8 +1864,7 @@ def api_get_member_scores(request: Request):
     if "admin_user" not in request.session:
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute("SELECT member_id, name, email FROM members")
     members = cursor.fetchall()
@@ -1855,9 +1898,9 @@ async def read_index(request: Request):
 
 @app.post("/api/admin/login")
 def api_admin_login(request: Request, data: AdminAuthRequest):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM admins WHERE username = ? AND password = ?", (data.username, data.password))
+    cursor.execute("SELECT * FROM admins WHERE username = %s AND password = %s", (data.username, data.password))
     user = cursor.fetchone()
     conn.close()
 
@@ -1880,8 +1923,7 @@ def get_admin_members_page(request: Request):
 
 @app.get("/api/admin/members")
 def api_get_members():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute("SELECT member_id, name, email, qr_token FROM members")
     members = [dict(row) for row in cursor.fetchall()]
@@ -1891,9 +1933,9 @@ def api_get_members():
 @app.delete("/api/admin/members/{member_id}")
 def api_delete_member(member_id: str):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM members WHERE member_id = ?", (member_id,))
+        cursor.execute("DELETE FROM members WHERE member_id = %s", (member_id,))
         conn.commit()
         conn.close()
         member_cache.invalidate()
@@ -1906,10 +1948,9 @@ def api_get_member_detail(member_id: str, request: Request):
     if "admin_user" not in request.session:
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn(dict_cursor=True)
     cursor = conn.cursor()
-    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
+    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = %s",
                    (member_id,))
     member = cursor.fetchone()
     if member is None:
@@ -1918,13 +1959,13 @@ def api_get_member_detail(member_id: str, request: Request):
 
     escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%({escaped})"
-    visit_where = "direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'"
+    visit_where = "direction = 'IN' AND is_alert = 0 AND member_id LIKE %s"
     cursor.execute(f"SELECT timestamp FROM passing_logs WHERE {visit_where} ORDER BY id DESC LIMIT 50", (pattern,))
     visits = [row["timestamp"] for row in cursor.fetchall()]
     cursor.execute(f"SELECT COUNT(*) AS c, MAX(timestamp) AS last FROM passing_logs WHERE {visit_where}", (pattern,))
     v = cursor.fetchone()
 
-    cursor.execute("SELECT machine, start_time, end_time, duration FROM occupancy_logs WHERE member_id = ? ORDER BY id DESC LIMIT 50",
+    cursor.execute("SELECT machine, start_time, end_time, duration FROM occupancy_logs WHERE member_id = %s ORDER BY id DESC LIMIT 50",
                    (member_id,))
     usages = []
     for row in cursor.fetchall():
@@ -1936,7 +1977,7 @@ def api_get_member_detail(member_id: str, request: Request):
             "duration": row["duration"],
             "overtime": bool(info) and (row["duration"] or 0) > info["limit"],
         })
-    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = ?", (member_id,))
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = %s", (member_id,))
     u = cursor.fetchone()
     conn.close()
 
@@ -1974,16 +2015,16 @@ def _member_id_from_label(label):
 def _member_stats(cursor, member_id):
     if not member_id:
         return None
-    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = ?",
+    cursor.execute("SELECT member_id, name, email, face_embedding IS NOT NULL AS has_face FROM members WHERE member_id = %s",
                    (member_id,))
     m = cursor.fetchone()
     if m is None:
         return None
     escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     cursor.execute("SELECT COUNT(*) AS c, MAX(timestamp) AS last FROM passing_logs "
-                   "WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE ? ESCAPE '\\'", (f"%({escaped})",))
+                   "WHERE direction = 'IN' AND is_alert = 0 AND member_id LIKE %s", (f"%({escaped})",))
     v = cursor.fetchone()
-    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = ?", (member_id,))
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(duration), 0) AS total FROM occupancy_logs WHERE member_id = %s", (member_id,))
     u = cursor.fetchone()
     return {"member_id": m["member_id"], "name": m["name"], "email": m["email"], "has_face": bool(m["has_face"]),
             "visit_count": v["c"], "last_visit": v["last"], "usage_count": u["c"], "total_usage_seconds": u["total"]}
@@ -2003,8 +2044,7 @@ def api_get_logs(request: Request):
     if "admin_user" not in request.session:
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute("SELECT member_id, name FROM members")
     names = {row["member_id"]: row["name"] for row in cursor.fetchall()}
@@ -2045,8 +2085,7 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
         return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
     not_found = JSONResponse({"status": "error", "message": "ログが見つかりません。"}, status_code=404)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_conn(dict_cursor=True)
     cursor = conn.cursor()
     fields, title, member_id = [], "", None
 
@@ -2058,7 +2097,7 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
             return not_found
 
     if kind == "gate":
-        cursor.execute("SELECT id, timestamp, direction, member_id, is_alert, note FROM passing_logs WHERE id = ?", (log_id,))
+        cursor.execute("SELECT id, timestamp, direction, member_id, is_alert, note FROM passing_logs WHERE id = %s", (log_id,))
         r = cursor.fetchone()
         if r is None:
             conn.close()
@@ -2074,7 +2113,7 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
             {"label": "判定の理由", "value": r["note"] or "（記録なし）"},
         ]
     elif kind == "machine":
-        cursor.execute("SELECT id, member_id, machine, start_time, end_time, duration FROM occupancy_logs WHERE id = ?", (log_id,))
+        cursor.execute("SELECT id, member_id, machine, start_time, end_time, duration FROM occupancy_logs WHERE id = %s", (log_id,))
         r = cursor.fetchone()
         if r is None:
             conn.close()
@@ -2122,13 +2161,13 @@ def get_admin_register_page(request: Request):
 @app.post("/api/admin/register")
 def api_admin_register(data: AdminAuthRequest):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO admins (username, password) VALUES (?, ?)", (data.username, data.password))
+        cursor.execute("INSERT INTO admins (username, password) VALUES (%s, %s)", (data.username, data.password))
         conn.commit()
         conn.close()
         return {"status": "success"}
-    except sqlite3.IntegrityError:
+    except pymysql.err.IntegrityError:
         return {"status": "error", "message": "このIDはすでに使われています"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
