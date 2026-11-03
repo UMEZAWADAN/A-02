@@ -1348,13 +1348,35 @@ def camera_processing_loop():
                         prev_x = track_history.get(track_id, x_center)
                         
                         # 左から右へ線を跨いだ場合（入館方向）
-                        # 左から右へ線を跨いだ場合（入館方向）
-                        # 左から右へ線を跨いだ場合（入館方向）
                         if prev_x < LINE_X and x_center >= LINE_X:
                             # 既に EntranceSession が処理済みのIDならスキップ
                             if skip_tid is not None and track_id == skip_tid:
                                 track_history[track_id] = x_center
                                 continue
+
+                            # QRの状態を確認
+                            time_since_qr = current_time - state.last_qr_time
+                            is_qr_valid = (
+                                state.last_scanned_qr != "None" 
+                                and state.last_scanned_qr != "Invalid QR" 
+                                and time_since_qr <= CO_TRAILING_WINDOW
+                            )
+                            
+                            if is_qr_valid:
+                                # 🚨 有効なQRの直後に別人（顔認証セッション対象外）が通過した ＝ 共連れ検知！
+                                reason_note = f"共連れ検知 (Co-trailing): 有効なQR直後に別人(ID:{track_id})が通過しました"
+                                print(f"🚨 【共連れ検知】 {reason_note}")
+                                state.set_alert(True)
+                                state.register_pass("IN", f"Co-trailing ({state.last_scanned_qr})", 1, note=reason_note)
+                                
+                                # 重複を防ぐためにQR情報をクリア
+                                state.last_scanned_qr = "None"
+                            else:
+                                # QRなし、または有効期限外での通過
+                                print(f"未登録またはQRなし：認証失敗")
+                                state.set_alert(True)
+                                state.register_pass("IN", "Unknown / No QR", 1, note="QRなしでの通過")
+                                state.last_scanned_qr = "None"
 
                             # QRなし等で跨いだ場合のフォールバック処理
                             time_since_qr = current_time - state.last_qr_time
