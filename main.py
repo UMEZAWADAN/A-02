@@ -1160,12 +1160,11 @@ def camera_processing_loop():
         try:
             res = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
             kxy, kcf = find_pose_for_box(res, box)
-            color_feat = get_box_color_frame = get_box_color_feature(frame, kxy, kcf) if 'get_box_color_feature' in globals() else get_box_color_feature(frame, kxy, kcf)
             color_feat = get_box_color_feature(frame, kxy, kcf)
             body_ratio = get_body_proportion_feature(kxy, kcf)
-        except Exception as e:
+            return color_feat, body_ratio
+        except Exception:
             return None, None
-        return color_feat, body_ratio
     
     sit_log = {"key": None, "time": 0.0}
     entrance_session = None   # 入口：QRを読んだ会員1人分の認証セッション
@@ -1303,6 +1302,7 @@ def camera_processing_loop():
                         put_text(frame, f"ID:{track_id}", (int(box[0]), int(box[3]) + int(18 * UI)),
                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, hud=False)
 
+                        # 顔の類似度計算（本人の特定用）
                         if state.last_member_embedding is not None:
                             for face in faces:
                                 fcx = (face.bbox[0] + face.bbox[2]) / 2
@@ -1317,7 +1317,7 @@ def camera_processing_loop():
                                         rec["best"] = sim
                                         rec["time"] = current_time
 
-                        # 退館用：この人の枠内の顔を全会員と照合（1:N）。QRは使わず、最も似た会員を線を越えるまで保持する
+                        # 退館用：この人の枠内の顔を全会員と照合（1:N）
                         for face in faces:
                             fcx = (face.bbox[0] + face.bbox[2]) / 2
                             fcy = (face.bbox[1] + face.bbox[3]) / 2
@@ -1332,6 +1332,7 @@ def camera_processing_loop():
                                                              "sim": ident[2], "time": current_time}
                             else:
                                 erec["time"] = current_time
+                        
                         erec = exit_id_history.get(track_id)
                         if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
                             put_text(frame, f"{erec['member_id']} {erec['sim']:.2f}",
@@ -1343,69 +1344,40 @@ def camera_processing_loop():
                             put_text(frame, f"sim:{rec['best']:.2f}", (int(box[0]), max(int(15 * UI), int(box[1]) - int(8 * UI))),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, hud=False)
 
+                        # --- 通過・共連れ判定の整理 ---
                         if track_id in track_history:
                             prev_x = track_history[track_id]
-                            if skip_tid is not None and track_id == skip_tid and prev_x < LINE_X and x_center >= LINE_X:
-                                pass   # 認証セッションの本人の通過は、上の判定（線の向こう側で本人を確認）で扱う
-                            elif prev_x < LINE_X and x_center >= LINE_X:
+                            
+                            # 左から右へ線を跨いだ場合（入館方向）
+                            if prev_x < LINE_X and x_center >= LINE_X:
                                 time_since_qr = current_time - state.last_qr_time
-                                rec = face_sim_history.get(track_id)
-                                best_sim = None
-                                if (rec is not None and rec["member_id"] == state.last_member_id
-                                        and current_time - rec["time"] <= FACE_TIMEOUT):
-                                    best_sim = rec["best"]
-
-                                # まず基本の判定を行う
-                                ok, reason = judge_entry(
-                                    time_since_qr, state.last_scanned_qr,
-                                    state.last_member_embedding is not None, best_sim
+                                is_qr_valid = (
+                                    state.last_scanned_qr != "None" 
+                                    and state.last_scanned_qr != "Invalid QR" 
+                                    and time_since_qr <= CO_TRAILING_WINDOW
                                 )
                                 
-                                if ok:
-                                    # 1. 正常な本人通過
-                                    member_name = state.last_scanned_qr.split(" (")[0] if " (" in state.last_scanned_qr else state.last_scanned_qr
-                                    print(f"{member_name}：認証成功（類似度: {best_sim:.2f}）")
-                                    state.register_pass("IN", state.last_scanned_qr, 0, note=f"QRと顔が一致（顔の類似度 {best_sim:.2f}）")
-                                    state.mark_inside(state.last_member_id)
-                                    color_feat, body_ratio = entrance_body_and_clothes_feature(frame, box, state.last_member_id)
-                                    if color_feat is not None and body_ratio is not None:
-                                        state.add_recent_entry(state.last_member_id, member_name, color_feat, body_ratio, current_time)
-                                else:
-                                    # 2. 認証NGだった場合の細分化判定
-                                    is_qr_valid = (
-                                        state.last_scanned_qr != "None" 
-                                        and state.last_scanned_qr != "Invalid QR" 
-                                        and time_since_qr <= CO_TRAILING_WINDOW
-                                    )
-                                    total_persons_detected = len(tracked) if 'tracked' in locals() else 1
-                                    
-                                    if is_qr_valid:
-                                        # 条件A：有効なQRの直後、かつ 2人以上検知、かつ 顔が不一致 ＝ 共連れ
-                                        if total_persons_detected >= 2 and best_sim is not None and best_sim <= FACE_MATCH_THRESHOLD:
-                                            sim_str = f"{best_sim:.2f}"
-                                            reason_note = f"共連れ検知 (Co-trailing): 有効なQR直後で複数人({total_persons_detected}人)を検知し、顔が不一致です（類似度: {sim_str}）"
-                                            print(f"🚨 【共連れ検知】 {reason_note}")
-                                            state.set_alert(True)
-                                            state.register_pass("IN", f"Co-trailing ({state.last_scanned_qr})", 1, note=reason_note)
-                                        
-                                        # 条件B：有効なQRだが顔が全く映らなかった/検出できなかった
-                                        elif best_sim is None:
-                                            reason_note = f"顔検出エラー: QR有効期限内ですがゲート通過時に顔を検出できませんでした"
-                                            print(f"⚠️ {reason_note}")
-                                            state.set_alert(True)
-                                            state.register_pass("IN", "Face Detection Failed", 1, note=reason_note)
-                                        
-                                        # 条件C：有効なQRだが1人で顔が一致しなかった場合など
-                                        else:
-                                            print(f"未登録または別人：認証失敗（理由: {reason}）")
-                                            state.set_alert(True)
-                                            state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
-                                    else:
-                                        # QRが無効または期限切れ
-                                        print(f"未登録または別人：認証失敗（理由: {reason}）")
-                                        state.set_alert(True)
-                                        state.register_pass("IN", "Unknown / Face Mismatch", 1, note=reason)
+                                # この枠の中に「本人（顔の類似度が十分な人）」が含まれているかチェック
+                                is_actual_owner = False
+                                if rec is not None and rec["best"] > FACE_MATCH_THRESHOLD:
+                                    is_actual_owner = True
 
+                                if is_qr_valid and is_actual_owner and (skip_tid is None or track_id == skip_tid):
+                                    # 本人の通過（※入館処理はEntranceSession側で安全に管理されるため、ここでは重複登録しない）
+                                    pass
+                                elif is_qr_valid:
+                                    # 有効なQRの直後だが、顔が一致しない人、または本人以外の人が通過した ＝ 共連れ！
+                                    reason_note = f"共連れ検知 (Co-trailing): 有効なQR直後に本人以外の人(ID:{track_id})が通過しました"
+                                    print(f"🚨 【共連れ検知】 {reason_note}")
+                                    state.set_alert(True)
+                                    state.register_pass("IN", f"Co-trailing ({state.last_scanned_qr})", 1, note=reason_note)
+                                else:
+                                    # QR有効期限外または未登録者の通過
+                                    print(f"未登録または別人：認証失敗")
+                                    state.set_alert(True)
+                                    state.register_pass("IN", "Unknown / Face Mismatch", 1, note="QR有効期限外または未登録者の通過")
+
+                            # 右から左へ戻ってきた場合（退館の処理）
                             elif prev_x > LINE_X and x_center <= LINE_X:
                                 if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
                                     if state.leave_if_inside(erec["member_id"]):
@@ -1427,7 +1399,7 @@ def camera_processing_loop():
                                     state.register_pass("OUT", "Unknown", 0, note=out_reason)
                                 state.set_alert(False)
 
-                        track_history[track_id] = x_center
+                            track_history[track_id] = x_center
 
                 put_text(frame, "MODE: [ENTRANCE (IN: QR+Face / OUT: Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
