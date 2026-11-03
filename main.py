@@ -1348,6 +1348,7 @@ def camera_processing_loop():
                         prev_x = track_history.get(track_id, x_center)
                         
                         # 左から右へ線を跨いだ場合（入館方向）
+                        # 左から右へ線を跨いだ場合（入館方向）
                         if prev_x < LINE_X and x_center >= LINE_X:
                             time_since_qr = current_time - state.last_qr_time
                             is_qr_valid = (
@@ -1379,13 +1380,16 @@ def camera_processing_loop():
                                 reason_note = f"共連れ検知 (Co-trailing): 有効なQR直後に別人(ID:{track_id})が通過しました"
                                 print(f"🚨 【共連れ検知】 {reason_note}")
                                 state.set_alert(True)
+                                # 💡 ここを「Co-trailing (Aさんの名前)」という1つのログに統一
                                 state.register_pass("IN", f"Co-trailing ({state.last_scanned_qr})", 1, note=reason_note)
+                                
+                                # ⚠️ 重要：共連れが起きた場合は、直後の重複判定を防ぐためにQR情報をクリアしておく
+                                state.last_scanned_qr = "None"
                             else:
                                 # QRなし、または有効期限外での通過
                                 print(f"未登録または別人：認証失敗")
                                 state.set_alert(True)
                                 state.register_pass("IN", "Unknown / Face Mismatch", 1, note="QR有効期限外または未登録者の通過")
-
                         # 右から左へ戻ってきた場合（退館 / アウト判定）
                         elif prev_x > LINE_X and x_center <= LINE_X:
                             if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
