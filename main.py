@@ -1375,6 +1375,9 @@ def camera_processing_loop():
                                 color_feat, body_ratio = entrance_body_and_clothes_feature(frame, box, member_id)
                                 if color_feat is not None:
                                     state.add_recent_entry(member_id, member_name, color_feat, body_ratio, current_time)
+
+                                state.last_scanned_qr = "None"
+                                
                             elif is_qr_valid:
                                 # 有効なQRの直後だが、顔が一致しない人が通過した ＝ 共連れ検知！
                                 reason_note = f"共連れ検知 (Co-trailing): 有効なQR直後に別人(ID:{track_id})が通過しました"
