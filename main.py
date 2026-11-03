@@ -1374,8 +1374,14 @@ def camera_processing_loop():
                                 # ログには「Aさんの共連れ」として記録
                                 state.register_pass("IN", f"Co-trailing by {suspect_member}", 1, note=reason_note)
                                 
-                                # 1回のQRで何人も通れないよう、共連れ検知後にQR情報をクリア
+                                # 🔴 【追加】重複を防ぐためにQR情報とセッションを完全にリセット・終了する
                                 state.last_scanned_qr = "None"
+                                state.last_qr_time = 0.0
+                                
+                                # グローバル変数として定義されている entrance_session も強制終了させる
+                                if 'entrance_session' in globals() and entrance_session is not None:
+                                    entrance_session.done = True
+                                    entrance_session = None
                             else:
                                 # QRがそもそも無い単独の不審侵入
                                 print(f"🚨 【未認証侵入】 QRなしでの通過を検知 (ID:{track_id})")
