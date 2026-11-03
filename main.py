@@ -66,8 +66,8 @@ STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（既定の95よ�
 CO_TRAILING_WINDOW = 10.0
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
-FACE_MATCH_THRESHOLD = 0.40   # 顔が一致したとみなすコサイン類似度（入口の1:1判定。ログを見て調整）
-ROOM_FACE_THRESHOLD = 0.40    # ルームモードの1:N判定用。部屋のカメラは遠い・斜めで類似度が低めになりやすいので、画面の best= を見て下げる
+FACE_MATCH_THRESHOLD = 0.60   # 顔が一致したとみなすコサイン類似度（入口の1:1判定。ログを見て調整）
+ROOM_FACE_THRESHOLD = 0.60    # ルームモードの1:N判定用。部屋のカメラは遠い・斜めで類似度が低めになりやすいので、画面の best= を見て下げる
 
 # 📧 メール送信設定（実際の運用に合わせて書き換えてください）
 SMTP_SERVER = "smtp.gmail.com"
