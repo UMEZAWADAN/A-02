@@ -257,6 +257,7 @@
             </div>
             
             <div id="resultMsg" class="jp-text"></div>
+            <a href="/portal" id="loginBtn" class="btn" style="display:none;">ログイン画面へ</a>
         </div>
     </div>
 
@@ -272,6 +273,14 @@
         navigator.mediaDevices.getUserMedia({ video: true })
             .then(stream => { video.srcObject = stream; })
             .catch(err => { alert("カメラの起動に失敗しました: " + err); });
+
+        // 👇 ここに追加：ブラウザのカメラを止める関数
+        function stopCamera() {
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(t => t.stop());
+            }
+        }
+
 
         function takeSnapshot() {
             const name = document.getElementById('name').value;
@@ -295,27 +304,29 @@
     
         const imageDataUrl = canvas.toDataURL('image/jpeg');
 
-        // サーバーへ送信
         fetch('/api/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-            name: name, 
-            email: email, 
-            password: password, // 👈 【追加】
-            image: imageDataUrl 
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === "success") {
-                msgDiv.style.color = "var(--accent-warm)";
-                msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
-            } else {
-                msgDiv.style.color = "#b55232";
-                msgDiv.innerText = "登録失敗: " + data.message;
-                }
-            })
+            body: JSON.stringify({
+            name: name,
+            email: email,
+            password: password,
+            image: imageDataUrl
+        })
+    })
+        .then(response => response.json())      // 👈 この行を戻す
+        .then(data => {
+            if (data.status === "success") {
+            msgDiv.style.color = "var(--accent-warm)";
+            msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
+            document.getElementById('loginBtn').style.display = "inline-block";
+            document.querySelector('button[onclick="takeSnapshot()"]').style.display = "none";
+            stopCamera();
+        } else {
+            msgDiv.style.color = "#b55232";
+            msgDiv.innerText = "登録失敗: " + data.message;
+        }
+    })
         .catch(err => {
             msgDiv.style.color = "#b55232";
             msgDiv.innerText = "通信エラーが発生しました。";

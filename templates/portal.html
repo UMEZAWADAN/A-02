@@ -5,9 +5,8 @@
     <title>会員ポータル - CHOCOZAP</title>
     <style>
         :root {
-            --bg-color: #f4f1ea;
-            --surface-card: #fcfbfa;
-            --surface-alt: #eae5dc;
+            --surface-card: rgba(252, 251, 250, 0.92);
+            --surface-alt: rgba(234, 229, 220, 0.7);
             --border-color: #ded7cb;
             --text-main: #332d29;
             --text-muted: #82786f;
@@ -22,7 +21,11 @@
 
         body {
             font-family: var(--font-en);
-            background-color: var(--bg-color);
+            /* 🖼️ 画面全体に広がる背景画像（フッターの後ろまで敷き詰め） */
+            background-image: linear-gradient(rgba(30, 25, 22, 0.55), rgba(30, 25, 22, 0.55)), url('https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=1920&q=80');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
             color: var(--text-main);
             margin: 0;
             padding-top: 80px;
@@ -33,22 +36,26 @@
             box-sizing: border-box;
         }
 
-        /* 🌐 ヘッダー */
+        /* 🌐 ヘッダー（history.htmlと同じ動き：普段は透明、ホバーで白背景＆影） */
         .site-header {
             position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 80px;
-            background-color: rgba(244, 241, 234, 0.85);
-            backdrop-filter: blur(10px);
+            background-color: transparent;
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 0 48px;
             box-sizing: border-box;
             z-index: 1000;
-            border-bottom: 1px solid rgba(222, 215, 203, 0.5);
+            transition: background-color 0.4s ease, box-shadow 0.4s ease;
+        }
+
+        .site-header:hover {
+            background-color: #ffffff;
+            box-shadow: 0 4px 20px rgba(51, 45, 41, 0.1);
         }
 
         .header-logo {
@@ -56,8 +63,15 @@
             font-size: 1.4rem;
             font-weight: 300;
             letter-spacing: 0.25em;
-            color: var(--text-main);
+            color: #ffffff;
             text-decoration: none;
+            text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+            transition: color 0.4s ease, text-shadow 0.4s ease;
+        }
+
+        .site-header:hover .header-logo {
+            color: var(--text-main);
+            text-shadow: none;
         }
 
         .header-nav {
@@ -71,18 +85,31 @@
 
         .header-nav a {
             font-family: var(--font-logo);
-            color: var(--text-main);
+            color: #ffffff;
             text-decoration: none;
             font-size: 0.85rem;
             letter-spacing: 0.2em;
             font-weight: 500;
-            transition: opacity 0.2s;
             cursor: pointer;
+            text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+            transition: color 0.4s ease, opacity 0.2s, text-shadow 0.4s ease;
+        }
+
+        .site-header:hover .header-nav a {
+            color: var(--text-main);
+            text-shadow: none;
         }
 
         .header-nav a:hover { opacity: 0.6; }
         .auth-only { display: none; }
-        .nav-logout { color: #b55232 !important; }
+        
+        .nav-logout { 
+            color: #ff8b71 !important; 
+            transition: color 0.4s ease;
+        }
+        .site-header:hover .nav-logout {
+            color: #b55232 !important;
+        }
 
         .portal-container {
             max-width: 1000px;
@@ -96,12 +123,14 @@
         /* 🔒 ログインカード */
         .login-card {
             background: var(--surface-card);
-            border: 1px solid var(--border-color);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.4);
             border-radius: var(--radius-lg);
             padding: 48px 40px;
             max-width: 420px;
             margin: 60px auto;
-            box-shadow: 0 10px 30px rgba(70, 60, 50, 0.04);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
             text-align: center;
         }
 
@@ -135,7 +164,7 @@
             border-radius: var(--radius-sm);
             box-sizing: border-box;
             font-size: 1rem;
-            background: var(--surface-alt);
+            background: rgba(255, 255, 255, 0.8);
             color: var(--text-main);
             outline: none;
         }
@@ -152,72 +181,24 @@
             font-weight: normal;
             margin: 0 0 4px 0;
             letter-spacing: 0.08em;
+            color: #ffffff;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
-        .portal-title h1 span { color: var(--accent-warm); font-style: italic; }
+        .portal-title h1 span { color: #ff9e80; font-style: italic; }
         .jp-text { font-family: var(--font-jp); }
 
-        /* 🖼️ ヒーロービジュアル（カード背景・枠線を排除） */
-        .hero-visual-card {
-            position: relative;
-            width: 100%;
-            height: 420px;
-            border-radius: var(--radius-lg);
-            overflow: hidden;
-            margin-bottom: 40px;
-            box-shadow: 0 12px 32px rgba(51, 45, 41, 0.08);
-        }
-
-        .hero-visual-card img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            filter: brightness(0.85);
-            transition: transform 0.6s ease;
-        }
-
-        .hero-visual-card:hover img {
-            transform: scale(1.02);
-        }
-
-        .hero-overlay-content {
-            position: absolute;
-            bottom: 32px;
-            left: 32px;
-            right: 32px;
-            color: white;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            background: rgba(30, 25, 22, 0.45);
-            backdrop-filter: blur(12px);
-            padding: 28px 32px;
-            border-radius: var(--radius-sm);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-        }
-
-        .hero-overlay-tag {
-            font-size: 0.75rem;
-            letter-spacing: 0.2em;
-            text-transform: uppercase;
-            opacity: 0.8;
-            margin-bottom: 6px;
-        }
-
-        .hero-overlay-title {
-            font-size: 1.5rem;
-            font-weight: 400;
-            margin: 0;
-            letter-spacing: 0.05em;
-        }
-
-        /* シンプルなステータス表示エリア（枠線カードなし） */
+        /* 📊 ステータス表示エリア（グラスモーフィズム） */
         .status-strip {
+            background: var(--surface-card);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: var(--radius-lg);
+            padding: 28px 36px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 20px 8px;
-            border-top: 1px solid var(--border-color);
-            border-bottom: 1px solid var(--border-color);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
         }
 
         .status-strip-item {
@@ -238,7 +219,7 @@
             font-size: 1.3rem;
             font-weight: 900;
             font-family: Impact, sans-serif;
-            box-shadow: 0 4px 12px rgba(181, 82, 50, 0.2);
+            box-shadow: 0 4px 12px rgba(181, 82, 50, 0.3);
         }
 
         .btn {
@@ -259,15 +240,23 @@
 
         .btn:hover { opacity: 0.9; }
 
+        /* 🌲 フッター（ヘッダーと連動：普段は透明、ホバーで白背景＆影） */
         .site-footer {
             width: 100%;
-            background-color: var(--surface-card);
-            border-top: 1px solid var(--border-color);
+            background-color: transparent;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
             padding: 40px 48px;
             box-sizing: border-box;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            transition: background-color 0.4s ease, box-shadow 0.4s ease, border-top 0.4s ease;
+        }
+
+        .site-footer:hover {
+            background-color: #ffffff;
+            box-shadow: 0 -4px 20px rgba(51, 45, 41, 0.1);
+            border-top: 1px solid var(--border-color);
         }
 
         .footer-logo {
@@ -275,15 +264,29 @@
             font-size: 1.2rem;
             font-weight: 300;
             letter-spacing: 0.25em;
-            color: var(--text-main);
+            color: #ffffff;
             text-decoration: none;
+            text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+            transition: color 0.4s ease, text-shadow 0.4s ease;
+        }
+
+        .site-footer:hover .footer-logo {
+            color: var(--text-main);
+            text-shadow: none;
         }
 
         .footer-copy {
             font-family: var(--font-en);
             font-size: 0.78rem;
-            color: var(--text-muted);
+            color: rgba(255, 255, 255, 0.7);
             letter-spacing: 0.08em;
+            text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+            transition: color 0.4s ease, text-shadow 0.4s ease;
+        }
+
+        .site-footer:hover .footer-copy {
+            color: var(--text-muted);
+            text-shadow: none;
         }
     </style>
 </head>
@@ -310,12 +313,11 @@
             <p class="jp-text" style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 24px;">ご登録のメールアドレスを入力してください</p>
             
             <form id="login-form" onsubmit="handleLogin(event)">
-            <div class="form-group">
-                <label class="jp-text" for="email-input">メールアドレス</label>
-                <input type="email" id="email-input" placeholder="example@email.com" required>
-            </div>
-    
-                <!-- 👇 【追加】パスワード入力欄 -->
+                <div class="form-group">
+                    <label class="jp-text" for="email-input">メールアドレス</label>
+                    <input type="email" id="email-input" placeholder="example@email.com" required>
+                </div>
+        
                 <div class="form-group">
                     <label class="jp-text" for="password-input">パスワード</label>
                     <input type="password" id="password-input" placeholder="••••••••" required>
@@ -330,30 +332,16 @@
             </div>
         </div>
 
-        <!-- 👤 2. マイページ（枠線カードを排除したシンプル構造） -->
+        <!-- 👤 2. マイページ -->
         <div id="portal-content">
             <div class="portal-header">
                 <div class="portal-title">
                     <h1>WELCOME, <span id="user-name-display">-</span></h1>
-                    <p class="jp-text" style="color: var(--text-muted); margin: 0; letter-spacing: 0.05em;">おかえりなさい、<strong id="user-name-sub-display">-</strong> 様</p>
+                    <p class="jp-text" style="color: rgba(255,255,255,0.85); margin: 0; letter-spacing: 0.05em; text-shadow: 0 1px 4px rgba(0,0,0,0.3);">おかえりなさい、<strong id="user-name-sub-display">-</strong> 様</p>
                 </div>
             </div>
 
-            <!-- 🖼️ メインビジュアル写真 -->
-            <div class="hero-visual-card">
-                <img src="https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&w=1200&q=80" alt="Esthe Room">
-                <div class="hero-overlay-content">
-                    <div>
-                        <div class="hero-overlay-tag">NEXT ESTHE RESERVATION</div>
-                        <h2 class="hero-overlay-title jp-text" id="esthe-reservation-display">確認中...</h2>
-                    </div>
-                    <div>
-                        <a href="/esthe" class="btn" style="background: white; color: var(--text-main);">予約を管理する</a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 📊 フラットなステータス表示ライン -->
+            <!-- 📊 ステータス表示エリア -->
             <div class="status-strip">
                 <div class="status-strip-item">
                     <div class="rank-badge" id="rank-badge-display">-</div>
@@ -397,29 +385,26 @@
         }
 
         async function handleLogin(e) {
-        e.preventDefault();
-        const email = document.getElementById('email-input').value;
-        const password = document.getElementById('password-input').value; // 👈 【追加】
-        const errorEl = document.getElementById('login-error');
-        errorEl.style.display = 'none';
+            e.preventDefault();
+            const email = document.getElementById('email-input').value;
+            const password = document.getElementById('password-input').value;
+            const errorEl = document.getElementById('login-error');
+            errorEl.style.display = 'none';
 
-        const res = await fetch('/api/member/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                email: email, 
-                password: password // 👈 【追加】
-            })
-        });
+            const res = await fetch('/api/member/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email, password: password })
+            });
 
-        const data = await res.json();
-        if (data.status === 'success') {
-            checkLogin();
-        } else {
-            errorEl.innerText = data.message || 'ログインに失敗しました。';
-            errorEl.style.display = 'block';
+            const data = await res.json();
+            if (data.status === 'success') {
+                checkLogin();
+            } else {
+                errorEl.innerText = data.message || 'ログインに失敗しました。';
+                errorEl.style.display = 'block';
+            }
         }
-    }
 
         async function handleLogout() {
             await fetch('/api/member/logout', { method: 'POST' });
@@ -446,7 +431,6 @@
             document.getElementById('rank-name-display').innerText = s.rank + ' MEMBER';
             document.getElementById('visit-count-display').innerText = s.visit_count + '回';
             document.getElementById('total-time-display').innerText = s.total_duration_fmt;
-            document.getElementById('esthe-reservation-display').innerText = data.next_esthe || 'ご予約はありません';
         }
 
         window.addEventListener('DOMContentLoaded', checkLogin);
