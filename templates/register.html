@@ -2,125 +2,268 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>chocoZAP会員登録</title>
+    <title>会員登録 - CHOCOZAP</title>
     <style>
-        /* ページ全体を縦方向のFlexboxにしてフッターを底に沈める */
+        :root {
+            --bg-color: #f4f1ea;
+            --surface-card: #fcfbfa;
+            --surface-alt: #eae5dc;
+            --border-color: #ded7cb;
+            --text-main: #332d29;
+            --text-muted: #82786f;
+            --accent-warm: #c86d4b;
+            --radius-lg: 20px;
+            --radius-sm: 10px;
+            
+            --font-logo: "Futura", "Century Gothic", -apple-system, sans-serif;
+            --font-en: "Times New Roman", "YuMincho", "Hiragino Mincho ProN", serif;
+            --font-jp: "Zen Maru Gothic", "Hiragino Maru Gothic Pro", "Yu Gothic Rounded", "Rounded Mplus 1c", sans-serif;
+        }
+
         html, body {
             height: 100%;
             margin: 0;
         }
 
         body { 
-            font-family: 'Helvetica Neue', Arial, sans-serif; 
-            text-align: center; 
-            background: #f4f7f6; 
-            color: #333;
+            font-family: var(--font-en); 
+            background-color: var(--bg-color); 
+            color: var(--text-main);
             display: flex;
             flex-direction: column;
-            padding: 20px;
+            padding-top: 100px;
             box-sizing: border-box;
-        }
-
-        /* メインコンテンツ部分が少ない時でもフッターを押し下げる */
-        .page-content {
-            flex: 1;
-            display: flex;
-            justify-content: center;
             align-items: center;
-            padding: 20px 0;
         }
 
-        .container { 
-            background: white; 
-            max-width: 500px; 
+        /* 🌐 ヘッダー（ロゴのみのシンプル設計） */
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
             width: 100%;
-            margin: auto; 
-            padding: 30px; 
-            border-radius: 10px; 
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1); 
+            height: 80px;
+            background-color: transparent;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 48px;
             box-sizing: border-box;
+            z-index: 1000;
+            transition: background-color 0.4s ease, box-shadow 0.4s ease;
         }
 
-        h2 {
+        .site-header:hover {
+            background-color: #ffffff;
+            box-shadow: 0 4px 20px rgba(51, 45, 41, 0.05);
+        }
+
+        .header-logo {
+            font-family: var(--font-logo);
+            font-size: 1.4rem;
+            font-weight: 300;
+            letter-spacing: 0.25em;
+            color: var(--text-main);
+            text-decoration: none;
+        }
+
+        .portal-container {
+            max-width: 600px;
+            width: 100%;
+            padding: 0 20px;
+            box-sizing: border-box;
+            flex: 1;
+            margin-bottom: 80px;
+        }
+
+        .portal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 32px;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 16px;
+        }
+
+        .portal-title h1 {
+            font-family: var(--font-en);
+            font-size: 2rem;
+            font-weight: normal;
+            margin: 0 0 4px 0;
+            letter-spacing: 0.08em;
+        }
+        .portal-title h1 span { color: var(--accent-warm); font-style: italic; }
+
+        .jp-text {
+            font-family: var(--font-jp);
+        }
+
+        .card { 
+            background: var(--surface-card); 
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg); 
+            padding: 32px; 
+            box-shadow: 0 10px 30px rgba(70, 60, 50, 0.04); 
+            box-sizing: border-box;
+            text-align: left;
+        }
+
+        .card h2 {
+            font-family: var(--font-en);
             margin-top: 0;
-            color: #2c3e50;
+            font-size: 1.4rem;
+            font-weight: normal;
+            letter-spacing: 0.05em;
         }
 
-        p {
-            font-size: 0.95rem;
-            color: #555;
-            line-height: 1.5;
+        .form-group {
+            margin-bottom: 20px;
         }
 
-        input, button { 
-            width: 90%; 
-            padding: 12px; 
-            margin: 10px 0; 
-            font-size: 16px; 
-            border-radius: 5px; 
-            border: 1px solid #ccc; 
+        .form-group label {
+            display: block;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+
+        .form-group input {
+            font-family: var(--font-en);
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
             box-sizing: border-box;
+            font-size: 1rem;
+            background: var(--surface-alt);
+            color: var(--text-main);
+            outline: none;
+            transition: border-color 0.2s;
         }
 
-        button { 
-            background: #007bff; 
-            color: white; 
-            border: none; 
-            cursor: pointer; 
-            font-weight: bold;
+        .form-group input:focus {
+            border-color: var(--accent-warm);
         }
 
-        button:hover { 
-            background: #0056b3; 
+        .btn {
+            font-family: var(--font-jp);
+            width: 100%;
+            background: var(--text-main);
+            color: white;
+            padding: 12px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-weight: 500;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+            box-sizing: border-box;
+            transition: opacity 0.2s;
+            font-size: 1rem;
+            margin-top: 10px;
+        }
+
+        .btn:hover { 
+            opacity: 0.9; 
         }
 
         video, canvas { 
             width: 100%; 
-            max-width: 400px; 
-            border-radius: 5px; 
+            border-radius: var(--radius-sm); 
             background: #000; 
+            border: 1px solid var(--border-color);
         }
 
         #resultMsg { 
             font-weight: bold; 
             margin-top: 15px; 
-            font-size: 0.95rem;
+            font-size: 0.9rem;
+            text-align: center;
         }
 
-        /* フッター */
-        footer {
-            margin-top: auto;
-            padding: 15px;
-            font-size: 0.85rem;
-            color: #777;
+        /* 🌲 フッター */
+        .site-footer {
+            width: 100%;
+            background-color: var(--surface-card);
+            border-top: 1px solid var(--border-color);
+            padding: 40px 48px;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .footer-logo {
+            font-family: var(--font-logo);
+            font-size: 1.2rem;
+            font-weight: 300;
+            letter-spacing: 0.25em;
+            color: var(--text-main);
+            text-decoration: none;
+        }
+
+        .footer-copy {
+            font-family: var(--font-en);
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            letter-spacing: 0.08em;
         }
     </style>
 </head>
 <body>
-    <div style="text-align: center; margin-top: 20px;">
-    <a href="/portal" style="color: #80deea; text-decoration: none; font-family: monospace;">&larr; ポータルホームに戻る</a>
-    </div>
 
-    <div class="page-content">
-        <div class="container">
-            <h2>chocoZAP会員登録</h2>
-            <p>お名前、メールアドレスを入力し、カメラで顔を撮影して登録してください。</p>
+    <!-- 🌐 ヘッダー（ロゴのみ） -->
+    <header class="site-header">
+        <a href="/portal" class="header-logo">CHOCOZAP</a>
+    </header>
+
+    <div class="portal-container">
+        <div class="portal-header">
+            <div class="portal-title">
+                <h1>MEMBER <span>REGISTRATION</span></h1>
+                <p class="jp-text" style="color: var(--text-muted); margin: 0; letter-spacing: 0.05em;">新規会員登録</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>SIGN UP</h2>
+            <p class="jp-text" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 24px;">お名前、メールアドレスを入力し、カメラで顔を撮影して登録してください。</p>
             
-            <input type="text" id="name" placeholder="お名前（例: 山田 太郎）" required><br>
-            <input type="email" id="email" placeholder="メールアドレス（例: test@example.com）" required><br>
+            <div class="form-group">
+                <label class="jp-text" for="name">お名前</label>
+                <input type="text" id="name" placeholder="山田 太郎" required>
+            </div>
+
+            <div class="form-group">
+                <label class="jp-text" for="email">メールアドレス</label>
+                <input type="email" id="email" placeholder="example@email.com" required>
+            </div>
+
+            <!-- 👇 【追加】パスワード入力欄 -->
+            <div class="form-group">
+                <label class="jp-text" for="password">パスワード</label>
+                <input type="password" id="password" placeholder="半角英数字で8文字以上" required>
+            </div>
             
-            <div style="margin: 15px 0;">
-                <video id="video" autoplay playsinline></video><br>
-                <button type="button" onclick="takeSnapshot()">顔を撮影して登録</button>
+            <div style="margin: 20px 0;">
+                <label class="jp-text" style="display: block; font-size: 0.82rem; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">顔写真撮影</label>
+                <video id="video" autoplay playsinline></video>
+                <button type="button" class="btn" onclick="takeSnapshot()">顔を撮影して登録</button>
                 <canvas id="canvas" style="display:none;"></canvas>
             </div>
             
-            <div id="resultMsg"></div>
+            <div id="resultMsg" class="jp-text"></div>
         </div>
     </div>
 
-    <footer>
-        &copy; CHOCOZAP SECURITY All Rights Reserved.
+    <!-- 🌲 フッター -->
+    <footer class="site-footer">
+        <a href="/portal" class="footer-logo">CHOCOZAP</a>
+        <div class="footer-copy">&copy; 2026 CHOCOZAP</div>
     </footer>
 
     <script>
@@ -133,46 +276,52 @@
         function takeSnapshot() {
             const name = document.getElementById('name').value;
             const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value; // 👈 【追加】
             const msgDiv = document.getElementById('resultMsg');
 
-            if (!name || !email) {
-                alert("お名前とメールアドレスを入力してください！");
+            if (!name || !email || !password) { // 👈 【修正】パスワードのチェックも追加
+                alert("お名前、メールアドレス、パスワードをすべて入力してください！");
                 return;
             }
 
-            msgDiv.style.color = "#007bff";
-            msgDiv.innerText = "登録処理中...（顔の特徴量を抽出しています）";
+        msgDiv.style.color = "var(--text-main)";
+        msgDiv.innerText = "登録処理中...（顔の特徴量を抽出しています）";
 
-            const canvas = document.getElementById('canvas');
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
-            const context = canvas.getContext('2d');
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
-            const imageDataUrl = canvas.toDataURL('image/jpeg');
+        const canvas = document.getElementById('canvas');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+        const imageDataUrl = canvas.toDataURL('image/jpeg');
 
-            // サーバーへ送信
-            fetch('/api/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name, email: email, image: imageDataUrl })
+        // サーバーへ送信
+        fetch('/api/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+            name: name, 
+            email: email, 
+            password: password, // 👈 【追加】
+            image: imageDataUrl 
+                })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.status === "success") {
-                    msgDiv.style.color = "#28a745";
-                    msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
-                } else {
-                    msgDiv.style.color = "#dc3545";
-                    msgDiv.innerText = "登録失敗: " + data.message;
+                msgDiv.style.color = "var(--accent-warm)";
+                msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
+            } else {
+                msgDiv.style.color = "#b55232";
+                msgDiv.innerText = "登録失敗: " + data.message;
                 }
             })
-            .catch(err => {
-                msgDiv.style.color = "#dc3545";
-                msgDiv.innerText = "通信エラーが発生しました。";
-                console.error(err);
-            });
-        }
+        .catch(err => {
+            msgDiv.style.color = "#b55232";
+            msgDiv.innerText = "通信エラーが発生しました。";
+            console.error(err);
+        });
+    }
     </script>
 </body>
 </html>

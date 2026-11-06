@@ -2,76 +2,494 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>エステ予約 - Gym Security</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>エステ予約 - CHOCOZAP</title>
   <style>
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #fff; margin: 0; padding: 20px; }
-    .container { max-width: 500px; margin: 50px auto; background: #1e1e1e; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; }
-    nav { text-align: left; margin-bottom: 20px; }
-    nav a { color: #80deea; text-decoration: none; font-size: 0.9em; font-family: monospace; }
-    nav a:hover { text-decoration: underline; }
-    h2 { color: #f48fb1; text-align: center; margin-bottom: 25px; }
-    label { display: block; margin-top: 15px; color: #ccc; font-weight: bold; }
-    input, select, button { width: 100%; padding: 12px; margin-top: 8px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #fff; box-sizing: border-box; font-size: 1em; }
-    button { background: #d81b60; color: #fff; font-weight: bold; border: none; margin-top: 25px; cursor: pointer; transition: background 0.2s; }
-    button:hover { background: #ad1457; }
-    #result-msg { margin-top: 20px; text-align: center; font-weight: bold; }
+    :root {
+      --bg-color: #f4f1ea;
+      --surface-card: #fcfbfa;
+      --surface-alt: #eae5dc;
+      --border-color: #ded7cb;
+      --text-main: #332d29;
+      --text-muted: #82786f;
+      --accent-warm: #c86d4b;
+      --radius-lg: 20px;
+      --radius-sm: 10px;
+      
+      --font-logo: "Futura", "Century Gothic", -apple-system, sans-serif;
+      --font-en: "Times New Roman", "YuMincho", "Hiragino Mincho ProN", serif;
+      --font-jp: "Zen Maru Gothic", "Hiragino Maru Gothic Pro", "Yu Gothic Rounded", "Rounded Mplus 1c", sans-serif;
+    }
+
+    body {
+      font-family: var(--font-en);
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      margin: 0;
+      padding-top: 100px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+
+    /* 🌐 ヘッダー */
+    .site-header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 80px;
+      background-color: transparent;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 48px;
+      box-sizing: border-box;
+      z-index: 1000;
+      transition: background-color 0.4s ease, box-shadow 0.4s ease;
+    }
+
+    .site-header:hover {
+      background-color: #ffffff;
+      box-shadow: 0 4px 20px rgba(51, 45, 41, 0.05);
+    }
+
+    .header-logo {
+      font-family: var(--font-logo);
+      font-size: 1.4rem;
+      font-weight: 300;
+      letter-spacing: 0.25em;
+      color: var(--text-main);
+      text-decoration: none;
+    }
+
+    .header-nav {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      align-items: center;
+    }
+
+    .header-nav a {
+      font-family: var(--font-logo);
+      color: var(--text-main);
+      text-decoration: none;
+      font-size: 0.85rem;
+      letter-spacing: 0.2em;
+      font-weight: 500;
+      transition: opacity 0.2s;
+      cursor: pointer;
+    }
+
+    .header-nav a:hover {
+      opacity: 0.6;
+    }
+
+    .nav-logout {
+      color: #b55232 !important;
+    }
+
+    /* コンテナ */
+    .portal-container {
+      max-width: 1000px;
+      width: 100%;
+      padding: 0 20px;
+      box-sizing: border-box;
+      flex: 1;
+      margin-bottom: 80px;
+    }
+
+    .portal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 32px;
+      border-bottom: 2px solid var(--border-color);
+      padding-bottom: 16px;
+    }
+
+    .portal-title h1 {
+      font-family: var(--font-en);
+      font-size: 2rem;
+      font-weight: normal;
+      margin: 0 0 4px 0;
+      letter-spacing: 0.08em;
+    }
+    .portal-title h1 span { color: var(--accent-warm); font-style: italic; }
+
+    .jp-text {
+      font-family: var(--font-jp);
+    }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+    }
+
+    @media (max-width: 768px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--surface-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      box-shadow: 0 10px 30px rgba(70, 60, 50, 0.04);
+    }
+
+    .card h2 {
+      font-family: var(--font-en);
+      font-size: 1.25rem;
+      font-weight: normal;
+      letter-spacing: 0.05em;
+      margin-top: 0;
+      margin-bottom: 20px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    .form-group input {
+      font-family: var(--font-en);
+      width: 100%;
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      box-sizing: border-box;
+      font-size: 1rem;
+      background: var(--surface-alt);
+      color: var(--text-main);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-group input:focus {
+      border-color: var(--accent-warm);
+    }
+
+    .btn {
+      font-family: var(--font-jp);
+      width: 100%;
+      background: var(--text-main);
+      color: white;
+      padding: 12px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+      text-align: center;
+      box-sizing: border-box;
+      transition: opacity 0.2s;
+    }
+
+    .btn:hover {
+      opacity: 0.9;
+    }
+
+    #result-msg {
+      margin-top: 16px;
+      font-size: 0.9rem;
+      text-align: center;
+      font-weight: bold;
+    }
+
+    /* 予約一覧 */
+    .res-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .res-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      background: var(--surface-alt);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+    }
+
+    .res-time {
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    .res-status {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+      font-weight: 500;
+    }
+
+    .res-status.reserved {
+      color: var(--accent-warm);
+      font-weight: 700;
+    }
+
+    .res-status.bad {
+      color: #b55232;
+    }
+
+    .res-empty {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 24px 0;
+      font-size: 0.9rem;
+    }
+
+    .btn-cancel {
+      font-family: var(--font-jp);
+      width: auto;
+      margin: 0;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      background: transparent;
+      color: #b55232;
+      border: 1px solid #b55232;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .btn-cancel:hover {
+      background: #b55232;
+      color: #fff;
+    }
+
+    /* 🌲 フッター */
+    .site-footer {
+      width: 100%;
+      background-color: var(--surface-card);
+      border-top: 1px solid var(--border-color);
+      padding: 40px 48px;
+      box-sizing: border-box;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .footer-logo {
+      font-family: var(--font-logo);
+      font-size: 1.2rem;
+      font-weight: 300;
+      letter-spacing: 0.25em;
+      color: var(--text-main);
+      text-decoration: none;
+    }
+
+    .footer-copy {
+      font-family: var(--font-en);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+    }
   </style>
 </head>
 <body>
-  <div class="container">
+
+  <!-- 🌐 ヘッダー -->
+  <header class="site-header">
+    <a href="/portal" class="header-logo">CHOCOZAP</a>
     <nav>
-      <a href="/portal">&larr; ポータルホームに戻る</a>
+      <ul class="header-nav">
+        <li><a href="/portal">PORTAL</a></li>
+        <li><a href="/history">HISTORY</a></li>
+        <li><a href="/esthe">ESTHE</a></li>
+        <li><a onclick="handleLogout()" class="nav-logout">LOGOUT</a></li>
+      </ul>
     </nav>
-    <h2>📅 エステ（20分枠）予約</h2>
-    <form id="esthe-form">
-      <label for="member_id">会員ID (例: mem_xxxxxxxx):</label>
-      <input type="text" id="member_id" name="member_id" required placeholder="会員IDを入力してください">
+  </header>
 
-      <label for="start_time">希望日時 (20分刻み):</label>
-      <input type="datetime-local" id="start_time" name="start_time" required>
+  <div class="portal-container">
+    <div class="portal-header">
+      <div class="portal-title">
+        <h1>ESTHE <span>RESERVATION</span></h1>
+        <p class="jp-text" style="color: var(--text-muted); margin: 0; letter-spacing: 0.05em;">セルフエステ（20分枠）のご予約</p>
+      </div>
+    </div>
 
-      <button type="submit">予約を確定する</button>
-    </form>
-    <div id="result-msg"></div>
+    <div class="dashboard-grid">
+      <!-- 予約フォーム -->
+      <div class="card">
+        <h2>NEW RESERVATION</h2>
+        <form id="esthe-form">
+          <div class="form-group">
+            <label for="start_time" class="jp-text">希望日時 (20分刻み)</label>
+            <input type="datetime-local" id="start_time" name="start_time" step="1200" required>
+          </div>
+          <button type="submit" class="btn">予約を確定する</button>
+        </form>
+        <div id="result-msg" class="jp-text"></div>
+      </div>
+
+      <!-- 自分の予約一覧 -->
+      <div class="card">
+        <h2>MY RESERVATIONS</h2>
+        <ul class="res-list" id="res-list">
+          <li class="res-empty jp-text">読み込み中...</li>
+        </ul>
+      </div>
+    </div>
   </div>
 
+  <!-- 🌲 フッター -->
+  <footer class="site-footer">
+    <a href="/portal" class="footer-logo">CHOCOZAP</a>
+    <div class="footer-copy">&copy; 2026 CHOCOZAP</div>
+  </footer>
+
   <script>
+    const STATUS_LABEL = {
+      reserved:    ['予約済み', 'reserved'],
+      in_progress: ['利用中', 'reserved'],
+      completed:   ['利用済み', ''],
+      cancelled:   ['キャンセル済み', ''],
+      no_show:     ['無断キャンセル', 'bad'],
+      overtime:    ['時間超過', 'bad'],
+    };
+
+    const msgDiv = document.getElementById('result-msg');
+
+    function showMsg(ok, text) {
+      msgDiv.style.color = ok ? '#c86d4b' : '#b55232';
+      msgDiv.innerText = (ok ? '✨ ' : '❌ ') + text;
+    }
+
+    function handleUnauthorized(res) {
+      if (res.status === 401) {
+        location.href = '/portal';
+        return true;
+      }
+      return false;
+    }
+
+    async function loadReservations() {
+      const list = document.getElementById('res-list');
+      try {
+        const res = await fetch('/api/esthe/my-reservations');
+        if (handleUnauthorized(res)) return;
+        const data = await res.json();
+        list.innerHTML = '';
+        if (data.status !== 'success' || !data.reservations.length) {
+          const li = document.createElement('li');
+          li.className = 'res-empty jp-text';
+          li.textContent = '予約はまだありません。';
+          list.appendChild(li);
+          return;
+        }
+        data.reservations.forEach(r => {
+          const [label, cls] = STATUS_LABEL[r.status] || [r.status, ''];
+
+          const li = document.createElement('li');
+          li.className = 'res-item';
+
+          const info = document.createElement('div');
+          const time = document.createElement('div');
+          time.className = 'res-time';
+          time.textContent = r.start_time + ' 〜 ' + r.end_time;
+          const st = document.createElement('div');
+          st.className = 'res-status jp-text ' + cls;
+          st.textContent = label;
+          info.appendChild(time);
+          info.appendChild(st);
+          li.appendChild(info);
+
+          if (r.cancellable) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn-cancel';
+            btn.textContent = 'キャンセル';
+            btn.addEventListener('click', () => cancelReservation(r.id, r.start_time));
+            li.appendChild(btn);
+          }
+          list.appendChild(li);
+        });
+      } catch (err) {
+        list.innerHTML = '';
+        const li = document.createElement('li');
+        li.className = 'res-empty jp-text';
+        li.textContent = '予約一覧を読み込めませんでした。';
+        list.appendChild(li);
+      }
+    }
+
+    async function cancelReservation(id, startTime) {
+      if (!confirm(startTime + ' の予約をキャンセルしますか？')) return;
+      try {
+        const res = await fetch('/api/esthe/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reservation_id: id })
+        });
+        if (handleUnauthorized(res)) return;
+        const result = await res.json();
+        showMsg(result.status === 'success', result.message);
+      } catch (err) {
+        showMsg(false, '通信エラーが発生しました。');
+      }
+      loadReservations();
+    }
+
+    async function handleLogout() {
+      await fetch('/api/member/logout', { method: 'POST' });
+      location.href = '/portal';
+    }
+
     document.getElementById('esthe-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const memberId = document.getElementById('member_id').value.trim();
-      const rawTime = document.getElementById('start_time').value; // "YYYY-MM-DDTHH:mm"
-      const msgDiv = document.getElementById('result-msg');
+      const rawTime = document.getElementById('start_time').value;
 
-      if (!memberId || !rawTime) {
-        msgDiv.style.color = '#ff1744';
-        msgDiv.innerText = 'すべての項目を入力してください。';
+      if (!rawTime) {
+        showMsg(false, '希望日時を入力してください。');
         return;
       }
 
-      // MySQLの DATETIME 形式 ("YYYY-MM-DD HH:MM:SS") に変換
       const formattedTime = rawTime.replace('T', ' ') + ':00';
 
       try {
         const response = await fetch('/api/esthe/reserve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ member_id: memberId, start_time: formattedTime })
+          body: JSON.stringify({ start_time: formattedTime })
         });
+        if (handleUnauthorized(response)) return;
         const result = await response.json();
 
+        showMsg(result.status === 'success', result.message);
         if (result.status === 'success') {
-          msgDiv.style.color = '#00e676';
-          msgDiv.innerText = '✨ ' + result.message;
           document.getElementById('esthe-form').reset();
-        } else {
-          msgDiv.style.color = '#ff1744';
-          msgDiv.innerText = '❌ ' + result.message;
         }
       } catch (err) {
-        msgDiv.style.color = '#ff1744';
-        msgDiv.innerText = '❌ 通信エラーが発生しました。';
+        showMsg(false, '通信エラーが発生しました。');
       }
+      loadReservations();
     });
+
+    window.addEventListener('DOMContentLoaded', loadReservations);
   </script>
 </body>
 </html>

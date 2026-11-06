@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>アクティビティ履歴 - CHOCOZAP</title>
+    <style>
+        :root {
+            --bg-color: #f4f1ea;
+            --surface-card: #fcfbfa;
+            --surface-alt: #eae5dc;
+            --border-color: #ded7cb;
+            --text-main: #332d29;
+            --text-muted: #82786f;
+            --accent-warm: #c86d4b;
+            --radius-lg: 20px;
+            --radius-sm: 10px;
+            
+            --font-logo: "Futura", "Century Gothic", -apple-system, sans-serif;
+            --font-en: "Times New Roman", "YuMincho", "Hiragino Mincho ProN", serif;
+            --font-jp: "Zen Maru Gothic", "Hiragino Maru Gothic Pro", "Yu Gothic Rounded", "Rounded Mplus 1c", sans-serif;
+        }
+
+        body {
+            font-family: var(--font-en);
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding-top: 100px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .site-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 80px;
+            background-color: transparent;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 48px;
+            box-sizing: border-box;
+            z-index: 1000;
+            transition: background-color 0.4s ease, box-shadow 0.4s ease;
+        }
+
+        .site-header:hover {
+            background-color: #ffffff;
+            box-shadow: 0 4px 20px rgba(51, 45, 41, 0.05);
+        }
+
+        .header-logo {
+            font-family: var(--font-logo);
+            font-size: 1.4rem;
+            font-weight: 300;
+            letter-spacing: 0.25em;
+            color: var(--text-main);
+            text-decoration: none;
+        }
+
+        .header-nav {
+            display: flex;
+            gap: 32px;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            align-items: center;
+        }
+
+        .header-nav a {
+            font-family: var(--font-logo);
+            color: var(--text-main);
+            text-decoration: none;
+            font-size: 0.85rem;
+            letter-spacing: 0.2em;
+            font-weight: 500;
+            transition: opacity 0.2s;
+            cursor: pointer;
+        }
+
+        .header-nav a:hover {
+            opacity: 0.6;
+        }
+
+        .nav-logout {
+            color: #b55232 !important;
+        }
+
+        .portal-container {
+            max-width: 1000px;
+            width: 100%;
+            padding: 0 20px;
+            box-sizing: border-box;
+            flex: 1;
+            margin-bottom: 80px;
+        }
+
+        .portal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 32px;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 16px;
+        }
+
+        .portal-title h1 {
+            font-family: var(--font-en);
+            font-size: 2rem;
+            font-weight: normal;
+            margin: 0 0 4px 0;
+            letter-spacing: 0.08em;
+        }
+        .portal-title h1 span { color: var(--accent-warm); font-style: italic; }
+
+        .jp-text {
+            font-family: var(--font-jp);
+        }
+
+        .card {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 32px;
+            box-shadow: 0 10px 30px rgba(70, 60, 50, 0.04);
+            margin-bottom: 32px;
+        }
+
+        .card h2 {
+            font-family: var(--font-en);
+            font-size: 1.25rem;
+            font-weight: normal;
+            letter-spacing: 0.05em;
+            margin-top: 0;
+        }
+
+        .status-content {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .rank-badge {
+            width: 72px;
+            height: 72px;
+            background: linear-gradient(135deg, #d97757, #b55232);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            font-weight: 900;
+            font-family: Impact, sans-serif;
+            box-shadow: 0 4px 12px rgba(181, 82, 50, 0.2);
+        }
+
+        .activity-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        .activity-table th, .activity-table td {
+            padding: 14px;
+            text-align: left;
+            font-size: 0.88rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .activity-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+
+        .site-footer {
+            width: 100%;
+            background-color: var(--surface-card);
+            border-top: 1px solid var(--border-color);
+            padding: 40px 48px;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .footer-logo {
+            font-family: var(--font-logo);
+            font-size: 1.2rem;
+            font-weight: 300;
+            letter-spacing: 0.25em;
+            color: var(--text-main);
+            text-decoration: none;
+        }
+
+        .footer-copy {
+            font-family: var(--font-en);
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            letter-spacing: 0.08em;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 🌐 ヘッダー（PORTAL / HISTORY / ESTHE / LOGOUT に統一） -->
+    <header class="site-header">
+        <a href="/portal" class="header-logo">CHOCOZAP</a>
+        <nav>
+            <ul class="header-nav">
+                <li><a href="/portal">PORTAL</a></li>
+                <li><a href="/history">HISTORY</a></li>
+                <li><a href="/esthe">ESTHE</a></li>
+                <li><a onclick="handleLogout()" class="nav-logout">LOGOUT</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <div class="portal-container">
+        <div class="portal-header">
+            <div class="portal-title">
+                <h1>MEMBER <span>HISTORY & STATUS</span></h1>
+                <p class="jp-text" style="color: var(--text-muted); margin: 0; letter-spacing: 0.05em;">ステータスおよびご利用履歴</p>
+            </div>
+        </div>
+
+        <!-- 🏆 ステータス・ランク（統合カード1） -->
+        <div class="card">
+            <h2>MY STATUS & RANK</h2>
+            <div class="status-content" style="margin-top: 20px;">
+                <div class="rank-badge" id="rank-badge-display">-</div>
+                <div style="font-size: 1rem;">
+                    <p style="margin: 6px 0;">RANK: <strong id="rank-name-display">-</strong></p>
+                    <p style="margin: 6px 0;">VISITS (THIS MONTH): <strong id="visit-count-display">0回</strong></p>
+                    <p style="margin: 6px 0;">TOTAL TIME: <strong id="total-time-display">0分</strong></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 📊 利用履歴（統合カード2） -->
+        <div class="card">
+            <h2>USAGE HISTORY</h2>
+            <table class="activity-table">
+                <thead>
+                    <tr>
+                        <th>DATE & TIME</th>
+                        <th>MACHINE</th>
+                        <th>DURATION</th>
+                    </tr>
+                </thead>
+                <tbody id="usage-history-body">
+                    <tr><td colspan="3" class="jp-text" style="text-align: center; color: var(--text-muted);">利用履歴がありません。</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <footer class="site-footer">
+        <a href="/portal" class="footer-logo">CHOCOZAP</a>
+        <div class="footer-copy">&copy; 2026 CHOCOZAP</div>
+    </footer>
+
+    <script>
+        async function checkLogin() {
+            try {
+                const res = await fetch('/api/member/me');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    const s = data.score;
+                    document.getElementById('rank-badge-display').innerText = s.rank;
+                    document.getElementById('rank-name-display').innerText = s.rank;
+                    document.getElementById('visit-count-display').innerText = s.visit_count + '回';
+                    document.getElementById('total-time-display').innerText = s.total_duration_fmt;
+
+                    const tbody = document.getElementById('usage-history-body');
+                    tbody.innerHTML = '';
+                    if (!data.usages || data.usages.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="3" class="jp-text" style="text-align: center; color: var(--text-muted);">利用履歴がありません。</td></tr>';
+                    } else {
+                        data.usages.forEach(u => {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${u.start_time}</td>
+                                <td style="font-weight: 700;">${u.machine}</td>
+                                <td>${Math.round(u.duration / 60)}分</td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+                    }
+                } else {
+                    window.location.href = '/portal';
+                }
+            } catch (e) {
+                window.location.href = '/portal';
+            }
+        }
+
+        async function handleLogout() {
+            await fetch('/api/member/logout', { method: 'POST' });
+            window.location.href = '/portal';
+        }
+
+        window.addEventListener('DOMContentLoaded', checkLogin);
+    </script>
+</body>
+</html>
