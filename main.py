@@ -26,6 +26,7 @@ from fastapi import Request
 from pydantic import BaseModel
 import uvicorn
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.staticfiles import StaticFiles  # 👈 ① この行を追加する
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -47,6 +48,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # テンプレートエンジンの準備
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key")
 app.add_middleware(SessionMiddleware, secret_key="your-secret-key-here")
