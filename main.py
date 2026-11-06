@@ -1966,8 +1966,19 @@ def api_cancel_esthe(request: Request, data: EstheCancelRequest):
         return {"status": "error", "message": "この予約はキャンセルできません（開始済み、またはすでに取り消し済みです）。"}
     return {"status": "success", "message": "予約をキャンセルしました。"}
 
+# ログイン画面を表示するルーティングを追加
+@app.get("/login", response_class=HTMLResponse)
+def get_login_page(request: Request):
+    # すでにログイン済みならマイページへ自動転送
+    if request.session.get("member_id"):
+        return RedirectResponse(url="/portal", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {})
+
+# portal ルートを修正（未ログイン時はログイン画面へ転送）
 @app.get("/portal", response_class=HTMLResponse)
 def get_user_portal(request: Request):
+    if not request.session.get("member_id"):
+        return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "portal.html", {})
 
 # 🆕 HISTORY ページ（RANKとHISTORYを統合した別HTML）へのルーティング

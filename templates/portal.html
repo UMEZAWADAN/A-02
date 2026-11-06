@@ -16,13 +16,12 @@
             
             --font-logo: "Futura", "Century Gothic", -apple-system, sans-serif;
             --font-en: "Times New Roman", "YuMincho", "Hiragino Mincho ProN", serif;
-            --font-jp: "Zen Maru Gothic", "Hiragino Maru Gothic Pro", "Yu Gothic Rounded", "Rounded Mplus 1c", sans-serif;
+            --font-jp: "Zen Maru Gothic", "Hiragino Maru Gothic Pro", "Yu Gothic Rounded", sans-serif;
         }
 
         body {
             font-family: var(--font-en);
-            /* 🖼️ 画面全体に広がる背景画像（フッターの後ろまで敷き詰め） */
-            background-image: linear-gradient(rgba(30, 25, 22, 0.45), rgba(30, 25, 22, 0.45)), url('/static/bg.jpg');
+            background-image: linear-gradient(rgba(30, 25, 22, 0.55), rgba(30, 25, 22, 0.55)), url('/static/bg.jpg');
             background-size: cover;
             background-position: center;
             background-attachment: fixed;
@@ -36,7 +35,6 @@
             box-sizing: border-box;
         }
 
-        /* 🌐 ヘッダー（history.htmlと同じ動き：普段は透明、ホバーで白背景＆影） */
         .site-header {
             position: fixed;
             top: 0;
@@ -101,7 +99,6 @@
         }
 
         .header-nav a:hover { opacity: 0.6; }
-        .auth-only { display: none; }
         
         .nav-logout { 
             color: #ff8b71 !important; 
@@ -120,57 +117,6 @@
             margin-bottom: 80px;
         }
 
-        /* 🔒 ログインカード */
-        .login-card {
-            background: var(--surface-card);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.4);
-            border-radius: var(--radius-lg);
-            padding: 48px 40px;
-            max-width: 420px;
-            margin: 60px auto;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
-            text-align: center;
-        }
-
-        .login-card h2 {
-            font-family: var(--font-en);
-            margin-top: 0;
-            font-size: 1.6rem;
-            font-weight: normal;
-            letter-spacing: 0.1em;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-            text-align: left;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-bottom: 6px;
-            font-weight: 600;
-            letter-spacing: 0.05em;
-        }
-
-        .form-group input {
-            font-family: var(--font-en);
-            width: 100%;
-            padding: 12px;
-            border: 1px solid var(--border-color);
-            border-radius: var(--radius-sm);
-            box-sizing: border-box;
-            font-size: 1rem;
-            background: rgba(255, 255, 255, 0.8);
-            color: var(--text-main);
-            outline: none;
-        }
-
-        #portal-content { display: none; }
-
         .portal-header {
             margin: 40px 0 24px 0;
         }
@@ -187,7 +133,6 @@
         .portal-title h1 span { color: #ff9e80; font-style: italic; }
         .jp-text { font-family: var(--font-jp); }
 
-        /* 📊 ステータス表示エリア（グラスモーフィズム） */
         .status-strip {
             background: var(--surface-card);
             backdrop-filter: blur(16px);
@@ -222,25 +167,6 @@
             box-shadow: 0 4px 12px rgba(181, 82, 50, 0.3);
         }
 
-        .btn {
-            font-family: var(--font-jp);
-            background: var(--text-main);
-            color: white;
-            padding: 12px 24px;
-            border: none;
-            border-radius: var(--radius-sm);
-            font-weight: 500;
-            letter-spacing: 0.05em;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-block;
-            text-align: center;
-            transition: opacity 0.2s;
-        }
-
-        .btn:hover { opacity: 0.9; }
-
-        /* 🌲 フッター（ヘッダーと連動：普段は透明、ホバーで白背景＆影） */
         .site-footer {
             width: 100%;
             background-color: transparent;
@@ -250,12 +176,11 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            transition: background-color 0.4s ease, box-shadow 0.4s ease, border-top 0.4s ease;
+            transition: background-color 0.4s ease;
         }
 
         .site-footer:hover {
             background-color: #ffffff;
-            box-shadow: 0 -4px 20px rgba(51, 45, 41, 0.1);
             border-top: 1px solid var(--border-color);
         }
 
@@ -266,73 +191,29 @@
             letter-spacing: 0.25em;
             color: #ffffff;
             text-decoration: none;
-            text-shadow: 0 1px 4px rgba(0,0,0,0.5);
-            transition: color 0.4s ease, text-shadow 0.4s ease;
+            transition: color 0.4s ease;
         }
 
-        .site-footer:hover .footer-logo {
-            color: var(--text-main);
-            text-shadow: none;
-        }
-
-        .footer-copy {
-            font-family: var(--font-en);
-            font-size: 0.78rem;
-            color: rgba(255, 255, 255, 0.7);
-            letter-spacing: 0.08em;
-            text-shadow: 0 1px 4px rgba(0,0,0,0.5);
-            transition: color 0.4s ease, text-shadow 0.4s ease;
-        }
-
-        .site-footer:hover .footer-copy {
-            color: var(--text-muted);
-            text-shadow: none;
-        }
+        .site-footer:hover .footer-logo { color: var(--text-main); }
+        .footer-copy { font-size: 0.78rem; color: rgba(255, 255, 255, 0.7); }
+        .site-footer:hover .footer-copy { color: var(--text-muted); }
     </style>
 </head>
 <body>
 
-    <!-- 🌐 ヘッダー -->
     <header class="site-header">
         <a href="/portal" class="header-logo">CHOCOZAP</a>
         <nav>
             <ul class="header-nav">
-                <li class="auth-only"><a href="/portal">PORTAL</a></li>
-                <li class="auth-only"><a href="/history">HISTORY</a></li>
-                <li class="auth-only"><a href="/esthe">ESTHE</a></li>
-                <li class="auth-only"><a onclick="handleLogout()" class="nav-logout">LOGOUT</a></li>
+                <li><a href="/portal">PORTAL</a></li>
+                <li><a href="/history">HISTORY</a></li>
+                <li><a href="/esthe">ESTHE</a></li>
+                <li><a onclick="handleLogout()" class="nav-logout">LOGOUT</a></li>
             </ul>
         </nav>
     </header>
 
     <div class="portal-container">
-
-        <!-- 🔒 1. ログインフォーム -->
-        <div id="login-section" class="login-card">
-            <h2>MEMBER LOGIN</h2>
-            <p class="jp-text" style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 24px;">ご登録のメールアドレスを入力してください</p>
-            
-            <form id="login-form" onsubmit="handleLogin(event)">
-                <div class="form-group">
-                    <label class="jp-text" for="email-input">メールアドレス</label>
-                    <input type="email" id="email-input" placeholder="example@email.com" required>
-                </div>
-        
-                <div class="form-group">
-                    <label class="jp-text" for="password-input">パスワード</label>
-                    <input type="password" id="password-input" placeholder="••••••••" required>
-                </div>
-
-                <button type="submit" class="btn" style="width: 100%;">ログイン</button>
-            </form>
-            <p id="login-error" style="color: #b55232; font-size: 0.85rem; margin-top: 12px; display: none;"></p>
-
-            <div style="margin-top: 24px; border-top: 1px solid var(--border-color); padding-top: 20px;">
-                <a href="/api/start-register" class="btn" style="width: 100%; box-sizing: border-box; background: var(--surface-alt); color: var(--text-main); border: 1px solid var(--border-color);">新規会員登録はこちら</a>      
-            </div>
-        </div>
-
-        <!-- 👤 2. マイページ -->
         <div id="portal-content">
             <div class="portal-header">
                 <div class="portal-title">
@@ -341,7 +222,6 @@
                 </div>
             </div>
 
-            <!-- 📊 ステータス表示エリア -->
             <div class="status-strip">
                 <div class="status-strip-item">
                     <div class="rank-badge" id="rank-badge-display">-</div>
@@ -358,70 +238,35 @@
                     </div>
                 </div>
             </div>
-
         </div>
-
     </div>
 
-    <!-- 🌲 フッター -->
     <footer class="site-footer">
         <a href="/portal" class="footer-logo">CHOCOZAP</a>
         <div class="footer-copy">&copy; 2026 CHOCOZAP</div>
     </footer>
 
     <script>
-        async function checkLogin() {
+        async function loadPortalData() {
             try {
                 const res = await fetch('/api/member/me');
                 const data = await res.json();
                 if (data.status === 'success') {
                     showPortal(data);
                 } else {
-                    showLogin();
+                    window.location.href = '/login';
                 }
             } catch (e) {
-                showLogin();
-            }
-        }
-
-        async function handleLogin(e) {
-            e.preventDefault();
-            const email = document.getElementById('email-input').value;
-            const password = document.getElementById('password-input').value;
-            const errorEl = document.getElementById('login-error');
-            errorEl.style.display = 'none';
-
-            const res = await fetch('/api/member/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: email, password: password })
-            });
-
-            const data = await res.json();
-            if (data.status === 'success') {
-                checkLogin();
-            } else {
-                errorEl.innerText = data.message || 'ログインに失敗しました。';
-                errorEl.style.display = 'block';
+                window.location.href = '/login';
             }
         }
 
         async function handleLogout() {
             await fetch('/api/member/logout', { method: 'POST' });
-            showLogin();
-        }
-
-        function showLogin() {
-            document.getElementById('login-section').style.display = 'block';
-            document.getElementById('portal-content').style.display = 'none';
-            document.querySelectorAll('.auth-only').forEach(el => el.style.display = 'none');
+            window.location.href = '/login';
         }
 
         function showPortal(data) {
-            document.getElementById('login-section').style.display = 'none';
-            document.getElementById('portal-content').style.display = 'block';
-            document.querySelectorAll('.auth-only').forEach(el => el.style.display = 'inline-block');
-
             const m = data.member;
             const s = data.score;
 
@@ -433,7 +278,7 @@
             document.getElementById('total-time-display').innerText = s.total_duration_fmt;
         }
 
-        window.addEventListener('DOMContentLoaded', checkLogin);
+        window.addEventListener('DOMContentLoaded', loadPortalData);
     </script>
 </body>
 </html>

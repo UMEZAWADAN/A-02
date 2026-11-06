@@ -171,6 +171,13 @@
             opacity: 0.9; 
         }
 
+        /* サブボタン用（少し落ち着いた色） */
+        .btn-sub {
+            background: var(--surface-alt);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+
         video, canvas { 
             width: 100%; 
             border-radius: var(--radius-sm); 
@@ -218,7 +225,7 @@
 
     <!-- 🌐 ヘッダー（ロゴのみ） -->
     <header class="site-header">
-        <a href="/portal" class="header-logo">CHOCOZAP</a>
+        <a href="/login" class="header-logo">CHOCOZAP</a>
     </header>
 
     <div class="portal-container">
@@ -243,7 +250,6 @@
                 <input type="email" id="email" placeholder="example@email.com" required>
             </div>
 
-            <!-- 👇 【追加】パスワード入力欄 -->
             <div class="form-group">
                 <label class="jp-text" for="password">パスワード</label>
                 <input type="password" id="password" placeholder="半角英数字で8文字以上" required>
@@ -252,18 +258,23 @@
             <div style="margin: 20px 0;">
                 <label class="jp-text" style="display: block; font-size: 0.82rem; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">顔写真撮影</label>
                 <video id="video" autoplay playsinline></video>
-                <button type="button" class="btn" onclick="takeSnapshot()">顔を撮影して登録</button>
                 <canvas id="canvas" style="display:none;"></canvas>
+                
+                <!-- 撮影・登録ボタン -->
+                <button type="button" class="btn" onclick="takeSnapshot()">顔を撮影して登録</button>
+                
+                <!-- ログイン画面に戻るボタン -->
+                <a href="/login" class="btn btn-sub">ログイン画面へ戻る</a>
             </div>
             
             <div id="resultMsg" class="jp-text"></div>
-            <a href="/portal" id="loginBtn" class="btn" style="display:none;">ログイン画面へ</a>
+            <a href="/login" id="loginBtn" class="btn" style="display:none;">ログイン画面へ進む</a>
         </div>
     </div>
 
     <!-- 🌲 フッター -->
     <footer class="site-footer">
-        <a href="/portal" class="footer-logo">CHOCOZAP</a>
+        <a href="/login" class="footer-logo">CHOCOZAP</a>
         <div class="footer-copy">&copy; 2026 CHOCOZAP</div>
     </footer>
 
@@ -274,65 +285,64 @@
             .then(stream => { video.srcObject = stream; })
             .catch(err => { alert("カメラの起動に失敗しました: " + err); });
 
-        // 👇 ここに追加：ブラウザのカメラを止める関数
+        // ブラウザのカメラを止める関数
         function stopCamera() {
             if (video.srcObject) {
                 video.srcObject.getTracks().forEach(t => t.stop());
             }
         }
 
-
         function takeSnapshot() {
             const name = document.getElementById('name').value;
             const email = document.getElementById('email').value;
-            const password = document.getElementById('password').value; // 👈 【追加】
+            const password = document.getElementById('password').value;
             const msgDiv = document.getElementById('resultMsg');
 
-            if (!name || !email || !password) { // 👈 【修正】パスワードのチェックも追加
+            if (!name || !email || !password) {
                 alert("お名前、メールアドレス、パスワードをすべて入力してください！");
                 return;
             }
 
-        msgDiv.style.color = "var(--text-main)";
-        msgDiv.innerText = "登録処理中...（顔の特徴量を抽出しています）";
+            msgDiv.style.color = "var(--text-main)";
+            msgDiv.innerText = "登録処理中...（顔の特徴量を抽出しています）";
 
-        const canvas = document.getElementById('canvas');
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-        const context = canvas.getContext('2d');
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-        const imageDataUrl = canvas.toDataURL('image/jpeg');
+            const canvas = document.getElementById('canvas');
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+            const imageDataUrl = canvas.toDataURL('image/jpeg');
 
-        fetch('/api/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-            name: name,
-            email: email,
-            password: password,
-            image: imageDataUrl
-        })
-    })
-        .then(response => response.json())      // 👈 この行を戻す
-        .then(data => {
-            if (data.status === "success") {
-            msgDiv.style.color = "var(--accent-warm)";
-            msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
-            document.getElementById('loginBtn').style.display = "inline-block";
-            document.querySelector('button[onclick="takeSnapshot()"]').style.display = "none";
-            stopCamera();
-        } else {
-            msgDiv.style.color = "#b55232";
-            msgDiv.innerText = "登録失敗: " + data.message;
+            fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: name,
+                    email: email,
+                    password: password,
+                    image: imageDataUrl
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === "success") {
+                    msgDiv.style.color = "var(--accent-warm)";
+                    msgDiv.innerText = "登録成功！QRコードを登録メールアドレスに送信しました。";
+                    document.getElementById('loginBtn').style.display = "inline-block";
+                    document.querySelector('button[onclick="takeSnapshot()"]').style.display = "none";
+                    stopCamera();
+                } else {
+                    msgDiv.style.color = "#b55232";
+                    msgDiv.innerText = "登録失敗: " + data.message;
+                }
+            })
+            .catch(err => {
+                msgDiv.style.color = "#b55232";
+                msgDiv.innerText = "通信エラーが発生しました。";
+                console.error(err);
+            });
         }
-    })
-        .catch(err => {
-            msgDiv.style.color = "#b55232";
-            msgDiv.innerText = "通信エラーが発生しました。";
-            console.error(err);
-        });
-    }
     </script>
 </body>
 </html>
