@@ -115,6 +115,12 @@ ENTRANCE_REASSOC_BASE_PX = round(FRAME_W * 0.12)      # 探し直しで許容す
 ENTRANCE_REASSOC_PX_PER_SEC = round(FRAME_W * 0.20)   # 探し直しで許容する移動距離（見失った秒数あたりの追加。幅の20%）
 ENTRANCE_OTHER_FACE_SIM = 0.15       # 会員との類似度がこれ未満の顔を含む枠は、別人として探し直しの候補から外す
 ENTRANCE_BANNER_SECONDS = 4.0        # 認証NG・失効のメッセージを画面に出す秒数
+ENTRANCE_PRECROSS_GRACE = 3.0        # QRは読んだが顔認証がまだの人がいるとき、線を越えた人を共連れと決める前に待つ秒数（その間に顔が一致すれば本人の通過として扱う）
+LINE_HYSTERESIS_PX = ENTRANCE_CROSS_MARGIN_PX         # 通過判定ラインの前後この距離を越えるまで、左右の状態を切り替えない（枠の揺れで行き来と誤判定しない）
+TRACK_LINK_SECONDS = 1.5             # 追跡IDを見失っても、この秒数以内に近くへ現れた新しい枠なら同じ人として履歴を引き継ぐ
+TRACK_LINK_BASE_PX = round(FRAME_W * 0.12)            # 引き継ぎで許容する移動距離（基本。幅の12%）
+TRACK_LINK_PX_PER_SEC = round(FRAME_W * 0.20)         # 引き継ぎで許容する移動距離（見失った秒数あたりの追加。幅の20%）
+TRACK_HISTORY_TTL = 30.0             # 追跡IDごとの履歴をこの秒数だけ残す（それより古いものは捨てる）
 
 # 🚪 退館：QRは使わず、顔だけで誰が出たかを識別する（全会員との1:N照合）
 EXIT_FACE_THRESHOLD = 0.40    # 退館時の顔識別のしきい値。別人に誤認されるなら上げる、識別できないなら下げる（画面の会員ID＋類似度を見て調整）
@@ -1016,10 +1022,14 @@ class EntranceSession:
     ・線の手前（左）にいた本人が、線から一定距離だけ向こう側（右）で見つかった時点で通過（入館）とする。
       線をまたいだ瞬間のフレームは必要ない。"""
 
-    def __init__(self, member_id, label, embedding):
+    def __init__(self, member_id, label, embedding, qr_time=0.0, token=None):
         self.member_id = member_id
         self.label = label
         self.embedding = embedding
+        self.qr_time = qr_time       # このQRを読んだ（または読み続けている）時刻。有効時間はここから数える
+        self.token = token           # 読み取ったQRの文字列（かざし続けているときの延長用）
+        self.consumed = False        # 共連れの判定にすでに使った（二重に警報を出さないため）
+        self.clothes_feat = (None, None)   # 顔認証OK時点で測った (服の色, 体格)
         self.authed = False
         self.auth_time = None
         self.match_sim = 0.0         # 会員と一致した顔の最大類似度
@@ -1044,12 +1054,20 @@ class EntranceSession:
                 return True
         return False
 
-    def update(self, now, qr_time, tracked, faces):
+    def grant_valid(self, now):
+        """このQRが、共連れ（同じQRで続けて入る人）の判定にまだ使えるか。
+        本人が通過して認証セッションが終わったあとも、有効時間内は使える。"""
+        return (not self.consumed) and (now - self.qr_time) <= CO_TRAILING_WINDOW
+
+    def update(self, now, tracked, faces, claimed=()):
         """1フレーム分の更新。tracked は [(track_id, box), ...]。
+        claimed は、ほかの認証セッションが本人として追っている追跡ID（探し直しの候補から外す）。
         戻り値: None / "authed"（顔認証OK）/ "crossed"（通過=入館）/ "expired"（時間切れ）"""
         if self.done:
             return None
-        if now - qr_time > CO_TRAILING_WINDOW:
+        others = set(claimed)
+        others.discard(self.track_id)
+        if now - self.qr_time > CO_TRAILING_WINDOW:
             self.done = True
             return "expired"
 
@@ -1087,7 +1105,8 @@ class EntranceSession:
                 for t, b in tracked:
                     c = self._center(b)
                     d = float(np.hypot(c[0] - self.pos[0], c[1] - self.pos[1]))
-                    if d > allowed or (best_d is not None and d >= best_d) or self._has_other_face(b):
+                    if (t in others or d > allowed or (best_d is not None and d >= best_d)
+                            or self._has_other_face(b)):
                         continue
                     box, tid, best_d = b, t, d
             if box is not None:
@@ -1119,6 +1138,136 @@ class EntranceSession:
         return event
 
 # =========================================================================
+# 🚪 線の通過検出・共連れ判定
+# =========================================================================
+class LineTracker:
+    """追跡IDごとに、入口ラインの左右どちら側にいるかを覚えて、通過（左→右 "in" / 右→左 "out"）を検出する。
+
+    ・ライン±margin_px を越えるまで左右を切り替えない（ヒステリシス）。
+      ライン付近で枠が揺れても「入館→誤退館→誤警報」にならない。
+    ・追跡IDが付け替わっても、見失った枠の近くに現れた新しい枠へ履歴を引き継ぐ。
+    ・古い履歴は ttl 秒で捨てる（辞書が増え続けない）。"""
+
+    def __init__(self, line_x, margin_px, ttl=TRACK_HISTORY_TTL):
+        self.line_x = line_x
+        self.margin = margin_px
+        self.ttl = ttl
+        self._h = {}   # {track_id: {"side": -1(左)/1(右), "x", "y", "time"}}
+
+    def update(self, tid, x, y, now):
+        rec = self._h.get(tid)
+        if rec is None:
+            # 初めて見た枠は、いまの位置で左右だけ決める（通過とはしない）
+            self._h[tid] = {"side": -1 if x < self.line_x else 1, "x": x, "y": y, "time": now}
+            return None
+        event = None
+        if rec["side"] < 0 and x >= self.line_x + self.margin:
+            rec["side"], event = 1, "in"
+        elif rec["side"] > 0 and x <= self.line_x - self.margin:
+            rec["side"], event = -1, "out"
+        rec["x"], rec["y"], rec["time"] = x, y, now
+        return event
+
+    def link_new_tracks(self, positions, now):
+        """positions: {track_id: (x, y)}（いまのフレームに見えている枠）。
+        履歴のない新しい枠を、最近見失った枠のうち近いものと対応づけ、履歴を引き継ぐ。
+        戻り値: {新しいID: 古いID}（ほかの履歴を引き継ぐときに使う）"""
+        new_ids = [t for t in positions if t not in self._h]
+        lost_ids = [t for t, r in self._h.items() if t not in positions and now - r["time"] <= TRACK_LINK_SECONDS]
+        pairs = []
+        for n in new_ids:
+            nx, ny = positions[n]
+            for o in lost_ids:
+                r = self._h[o]
+                allowed = TRACK_LINK_BASE_PX + TRACK_LINK_PX_PER_SEC * (now - r["time"])
+                d = float(np.hypot(nx - r["x"], ny - r["y"]))
+                if d <= allowed:
+                    pairs.append((d, n, o))
+        pairs.sort()
+        mapping, used_new, used_old = {}, set(), set()
+        for d, n, o in pairs:
+            if n in used_new or o in used_old:
+                continue
+            used_new.add(n)
+            used_old.add(o)
+            mapping[n] = o
+        for n, o in mapping.items():
+            self._h[n] = self._h.pop(o)
+        return mapping
+
+    def cleanup(self, now):
+        for t in [t for t, r in self._h.items() if now - r["time"] > self.ttl]:
+            del self._h[t]
+
+
+def pick_suspect_session(candidates, center, now):
+    """共連れの手引きをした可能性が高いQR所有者を選ぶ。
+    直前まで位置が分かっていた本人のうち、通過した人に一番近い人 → なければ最後にQRを読んだ人。"""
+    near = [s for s in candidates
+            if s.pos is not None and s.last_seen is not None and now - s.last_seen <= ENTRANCE_REASSOC_SECONDS]
+    if near:
+        return min(near, key=lambda s: float(np.hypot(s.pos[0] - center[0], s.pos[1] - center[1])))
+    return max(candidates, key=lambda s: s.qr_time)
+
+
+class CrossingJudge:
+    """線を左→右にまたいだ「どの認証セッションの本人でもない枠」を、共連れ／未認証侵入として判定する。
+
+    ・QRは読んだが顔認証がまだの人がいるとき、その人自身が先に線を越えた可能性がある。
+      すぐには決めず ENTRANCE_PRECROSS_GRACE 秒待ち、その間に顔が一致して本人の枠だと分かれば共連れにしない。
+    ・QRが有効な人が複数いても、共連れとして減点するのは1人だけ（通過した人に近い本人。いなければ最後にQRを読んだ人）。
+      判定に使ったQRは consumed にして二重に警報を出さない。"""
+
+    def __init__(self):
+        self.pending = []   # [{"tid", "center", "time", "cands"}]
+
+    def reset(self):
+        self.pending = []
+
+    def remap(self, old_id, new_id):
+        for p in self.pending:
+            if p["tid"] == old_id:
+                p["tid"] = new_id
+
+    @staticmethod
+    def _co_trailing(cands, center, now, tid):
+        suspect = pick_suspect_session(cands, center, now)
+        suspect.consumed = True
+        return ("co_trailing", suspect, tid)
+
+    def on_cross_in(self, tid, center, now, sessions, owned_by_tid):
+        """線を左→右にまたいだ枠 tid を判定する。owned_by_tid は {追跡ID: 本人として追っているセッション}。
+        戻り値: 確定した判定のリスト [("co_trailing", 疑いのセッション, tid) / ("intrusion", None, tid)]"""
+        owner = owned_by_tid.get(tid)
+        if owner is not None:
+            owner.armed = True   # 線の左から来たことが確かなので、本人の通過判定に使える
+            return []
+        cands = [s for s in sessions if s.grant_valid(now)]
+        if not cands:
+            return [("intrusion", None, tid)]
+        if any((not s.done) and (not s.authed) for s in cands):
+            self.pending.append({"tid": tid, "center": center, "time": now, "cands": cands})
+            return []
+        return [self._co_trailing(cands, center, now, tid)]
+
+    def poll(self, now, owned_by_tid):
+        """保留中の通過を見直す。本人の枠と分かれば取り下げ、猶予が過ぎれば確定する。"""
+        decided, keep = [], []
+        for p in self.pending:
+            owner = owned_by_tid.get(p["tid"])
+            if owner is not None:
+                owner.armed = True
+                continue
+            if now - p["time"] >= ENTRANCE_PRECROSS_GRACE:
+                cands = [s for s in p["cands"] if not s.consumed]
+                decided.append(self._co_trailing(cands, p["center"], now, p["tid"]) if cands
+                               else ("intrusion", None, p["tid"]))
+            else:
+                keep.append(p)
+        self.pending = keep
+        return decided
+
+# =========================================================================
 # 🎥 カメラ処理ループ
 # =========================================================================
 def camera_processing_loop():
@@ -1142,7 +1291,8 @@ def camera_processing_loop():
     print(f">> カメラ解像度: {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f}"
           f"（目標 {FRAME_W}x{FRAME_H} / YOLO imgsz={YOLO_IMGSZ} / 顔検出 {FACE_DET_SIZE[0]}x{FACE_DET_SIZE[1]}）")
 
-    track_history = {}
+    line_tracker = LineTracker(LINE_X, LINE_HYSTERESIS_PX)   # 追跡IDごとの線の左右（ヒステリシス付き）
+    crossing_judge = CrossingJudge()                         # 本人の枠でない通過者の共連れ／侵入判定
     face_sim_history = {}
     exit_id_history = {}   # 退館用：追跡IDごとに、顔で識別した会員 {member_id, name, sim, time}
     last_push_time = 0.0
@@ -1166,8 +1316,29 @@ def camera_processing_loop():
         except Exception:
             return None, None
     
+    def report_unauthorized_pass(kind, suspect, tid, sessions, now):
+        """CrossingJudge の判定結果を、画面・ログ・アラートに反映する。"""
+        if kind == "co_trailing":
+            suspect_member = suspect.label   # 例: "Aさん (mem_01)"
+            reason_note = f"共連れ検知 (Co-trailing): {suspect_member} のQR認証直後に未認証の人物(ID:{tid})が侵入しました"
+            if not suspect.authed:
+                reason_note += "（QR所有者の顔認証は完了していませんでした）"
+            print(f"🚨 【共連れ検知】 主犯/手助け: {suspect_member} | 侵入者ID: {tid}")
+            state.set_alert(True)
+            # ログには「Aさんの共連れ」として記録
+            state.register_pass("IN", f"Co-trailing by {suspect_member}", 1, note=reason_note)
+            # 使ったQRは consumed 済み。ほかに有効なQRが残っていなければ、画面側のQR情報もリセットする
+            if not any(s.grant_valid(now) for s in sessions):
+                state.last_scanned_qr = "None"
+                state.last_qr_time = 0.0
+        else:
+            print(f"🚨 【未認証侵入】 QRなしでの通過を検知 (ID:{tid})")
+            state.set_alert(True)
+            state.register_pass("IN", "Unknown / No QR", 1, note="QRなし・単独での未認証通過")
+            state.last_scanned_qr = "None"
+
     sit_log = {"key": None, "time": 0.0}
-    entrance_session = None   # 入口：QRを読んだ会員1人分の認証セッション
+    entrance_sessions = []    # 入口：QRを読んだ会員ごとの認証セッション（複数人が続けてQRを読んでも互いに上書きしない）
     auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}   # 認証NG・失効・入館OKの一時表示
     print("\n====================================================")
     print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
@@ -1189,7 +1360,8 @@ def camera_processing_loop():
             with mode_lock:
                 mode = active_mode
             if mode != "entrance":
-                entrance_session = None
+                entrance_sessions = []
+                crossing_judge.reset()
 
             if mode == "entrance":
                 qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
@@ -1202,12 +1374,20 @@ def camera_processing_loop():
                             state.process_qr(qr_data, current_time)
                             if (state.accepted_token == qr_data and state.last_member_id is not None
                                     and state.last_member_embedding is not None):
-                                # 有効なQR：この会員の顔認証セッションを開始（顔データ未登録の会員は従来どおり通過時に失敗扱い）
-                                entrance_session = EntranceSession(state.last_member_id, state.last_scanned_qr,
-                                                                   state.last_member_embedding)
+                                # 有効なQR：この会員の顔認証セッションを開始（顔データ未登録の会員は従来どおり通過時に失敗扱い）。
+                                # 同じ会員の古いセッションは置き換えるが、別の会員のセッションは残す。
+                                entrance_sessions = [s for s in entrance_sessions if s.member_id != state.last_member_id]
+                                entrance_sessions.append(EntranceSession(state.last_member_id, state.last_scanned_qr,
+                                                                         state.last_member_embedding,
+                                                                         qr_time=current_time, token=qr_data))
                                 auth_banner["until"] = 0.0
                             elif state.last_scanned_qr == "Invalid QR":
-                                entrance_session = None
+                                entrance_sessions = []
+                        else:
+                            # QRをかざし続けている間は、その会員の有効時間を延ばす
+                            for s in entrance_sessions:
+                                if s.token == qr_data and not s.done and not s.consumed:
+                                    s.qr_time = current_time
 
                 faces = face_app.get(frame)
 
@@ -1223,17 +1403,33 @@ def camera_processing_loop():
 
                 tracked = []   # [(track_id, box), ...]
                 if yolo_results[0].boxes.id is not None:
-                    tracked = list(zip(yolo_results[0].boxes.id.cpu().numpy().astype(int),
+                    tracked = list(zip(yolo_results[0].boxes.id.cpu().numpy().astype(int).tolist(),
                                        yolo_results[0].boxes.xyxy.cpu().numpy()))
 
+                # 追跡IDが付け替わったときは、見失った枠の近くに現れた新しい枠へ履歴を引き継ぐ
+                # （通過の左右・退館用の顔識別・認証セッションの本人ID）。古い履歴はここで捨てる。
+                positions = {t: ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for t, b in tracked}
+                for new_id, old_id in line_tracker.link_new_tracks(positions, current_time).items():
+                    for hist in (face_sim_history, exit_id_history):
+                        if old_id in hist and new_id not in hist:
+                            hist[new_id] = hist.pop(old_id)
+                    for s in entrance_sessions:
+                        if s.track_id == old_id:
+                            s.track_id = new_id
+                    crossing_judge.remap(old_id, new_id)
+                line_tracker.cleanup(current_time)
+
                 # --- 顔認証セッションの更新（顔が会員と一致した時点で認証OK。線を越えた本人を探し直して通過を判定） ---
-                skip_tid = None      # このIDの通過は下の従来判定ではなく、ここで扱う
-                face_sims = []
-                if entrance_session is not None:
-                    sess = entrance_session
-                    ev = sess.update(current_time, state.last_qr_time, tracked, faces)
-                    skip_tid = sess.track_id
-                    face_sims = sess.last_face_sims
+                face_sims = []       # 描画用：全セッションの (顔, 会員との類似度)
+                owned_by_tid = {}    # {追跡ID: 本人として追っているセッション}。この枠の通過は下の従来判定ではなく、ここで扱う
+                claimed = {s.track_id for s in entrance_sessions if not s.done and s.track_id is not None}
+                for sess in entrance_sessions:
+                    if sess.done:
+                        continue
+                    ev = sess.update(current_time, tracked, faces, claimed=claimed)
+                    if sess.track_id is not None:
+                        claimed.add(sess.track_id)
+                    face_sims.extend(sess.last_face_sims)
                     member_name = sess.label.split(" (")[0] if " (" in sess.label else sess.label
                     if ev == "authed":
                         print(f"✅ 【顔認証OK】 {sess.label}（類似度 {sess.match_sim:.2f}）… このまま線を越えると入館になります")
@@ -1277,11 +1473,15 @@ def camera_processing_loop():
                             print(f"⌛ 【顔認証タイムアウト】 {sess.label}：{CO_TRAILING_WINDOW:.0f}秒以内に顔が見つかりませんでした")
                             auth_banner.update(text=f"AUTH TIMEOUT (no face): {sess.member_id}", color=(0, 165, 255),
                                                until=current_time + ENTRANCE_BANNER_SECONDS)
-                    if sess.done:
-                        entrance_session = None
+                    # 通過した直後のフレームも「本人の枠」として扱う（下の従来判定で他人扱いしない）
+                    if sess.track_id is not None and (not sess.done or ev == "crossed"):
+                        owned_by_tid[sess.track_id] = sess
 
                 # 顔の枠（会員と一致した顔=黄、それ以外=灰）。認証セッション中は類似度も表示する
-                sim_by_face = {id(f): sv for f, sv in face_sims}
+                sim_by_face = {}
+                for f, sv in face_sims:
+                    if sv > sim_by_face.get(id(f), -1.0):
+                        sim_by_face[id(f)] = sv
                 for face in faces:
                     fsim = sim_by_face.get(id(face))
                     matched = fsim is not None and fsim > FACE_MATCH_THRESHOLD
@@ -1345,58 +1545,26 @@ def camera_processing_loop():
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, hud=False)
 
                         # --- 通過・共連れ・退館判定 ---
-                        prev_x = track_history.get(track_id, x_center)
-                        
-                        # 1. 左から右へ線を跨いだ場合（入館方向）
-                        if prev_x < LINE_X and x_center >= LINE_X:
-                            # Aさん（顔認証セッション通過者）本人の通過処理
-                            if skip_tid is not None and track_id == skip_tid:
-                                # Aさん本人は正規入館として記録（EntranceSession側で処理されるため位置更新のみ）
-                                track_history[track_id] = x_center
-                                continue
+                        # 線の左右は追跡IDごとにヒステリシス付きで管理する（ライン±LINE_HYSTERESIS_PX を越えたときだけ切り替わる）
+                        crossing = line_tracker.update(int(track_id), x_center, (box[1] + box[3]) / 2, current_time)
 
-                            # --- Aさん以外の「別の人」が線を跨いだ場合の判定 ---
-                            time_since_qr = current_time - state.last_qr_time
-                            is_qr_valid = (
-                                state.last_scanned_qr != "None" 
-                                and state.last_scanned_qr != "Invalid QR" 
-                                and time_since_qr <= CO_TRAILING_WINDOW
-                            )
-                            
-                            if is_qr_valid:
-                                # 🚨 AさんのQR有効時間内に「別人」が通過した ➔ Aさんを共犯とした共連れ検知！
-                                suspect_member = state.last_scanned_qr  # 例: "Aさん (mem_01)"
-                                reason_note = f"共連れ検知 (Co-trailing): {suspect_member} のQR認証直後に未認証の人物(ID:{track_id})が侵入しました"
-                                
-                                print(f"🚨 【共連れ検知】 主犯/手助け: {suspect_member} | 侵入者ID: {track_id}")
-                                state.set_alert(True)
-                                
-                                # ログには「Aさんの共連れ」として記録
-                                state.register_pass("IN", f"Co-trailing by {suspect_member}", 1, note=reason_note)
-                                
-                                # 🔴 【追加】重複を防ぐためにQR情報とセッションを完全にリセット・終了する
-                                state.last_scanned_qr = "None"
-                                state.last_qr_time = 0.0
-                                
-                                # グローバル変数として定義されている entrance_session も強制終了させる
-                                if 'entrance_session' in globals() and entrance_session is not None:
-                                    entrance_session.done = True
-                                    entrance_session = None
-                            else:
-                                # QRがそもそも無い単独の不審侵入
-                                print(f"🚨 【未認証侵入】 QRなしでの通過を検知 (ID:{track_id})")
-                                state.set_alert(True)
-                                state.register_pass("IN", "Unknown / No QR", 1, note="QRなし・単独での未認証通過")
-                                state.last_scanned_qr = "None"
+                        # 1. 左から右へ線を跨いだ場合（入館方向）
+                        if crossing == "in":
+                            # 認証セッションの本人の枠なら、入館の記録は EntranceSession 側で行う（ここでは何もしない）。
+                            # 本人の枠でなければ、QRが有効な人がいるかで「共連れ」か「未認証侵入」かを判定する。
+                            for kind, suspect, tid_ in crossing_judge.on_cross_in(
+                                    int(track_id), (x_center, (box[1] + box[3]) / 2), current_time,
+                                    entrance_sessions, owned_by_tid):
+                                report_unauthorized_pass(kind, suspect, tid_, entrance_sessions, current_time)
 
                         # 2. 右から左へ線を戻ってきた場合（退館方向）
-                        elif prev_x > LINE_X and x_center <= LINE_X:
+                        elif crossing == "out":
                             erec = exit_id_history.get(track_id)
                             if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
                                 member_id = erec["member_id"]
                                 name = erec["name"]
                                 member_label = f"{name} ({member_id})"
-                                
+
                                 if state.leave_if_inside(member_id):
                                     print(f"🚪 【退館成功】 {member_label} が退館しました（類似度: {erec['sim']:.2f}）")
                                     state.register_pass("OUT", member_label, 0, note=f"顔認証による退館 (類似度 {erec['sim']:.2f})")
@@ -1406,19 +1574,26 @@ def camera_processing_loop():
                                 print(f"🚪 【退館】 Unknown / Guest が退館しました")
                                 state.register_pass("OUT", "Unknown / Guest", 0, note="顔未識別での退館")
 
-                        # 位置の記録更新
-                        track_history[track_id] = x_center
+                # 保留中の通過（QRは読んだが顔認証がまだの人がいたとき）を見直す：本人の枠と分かれば取り下げ、猶予が過ぎれば確定する
+                for kind, suspect, tid_ in crossing_judge.poll(current_time, owned_by_tid):
+                    report_unauthorized_pass(kind, suspect, tid_, entrance_sessions, current_time)
+
+                # QRの有効時間が過ぎたセッションを片付ける（通過済みのセッションも、有効時間内は共連れ判定に使うので残す）
+                entrance_sessions = [s for s in entrance_sessions if current_time - s.qr_time <= CO_TRAILING_WINDOW]
 
                 put_text(frame, "MODE: [ENTRANCE (IN: QR+Face / OUT: Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                if entrance_session is not None:
-                    remain = max(0.0, CO_TRAILING_WINDOW - (current_time - state.last_qr_time))
-                    if entrance_session.authed:
-                        put_text(frame, f"AUTH OK: {entrance_session.member_id} sim={entrance_session.match_sim:.2f} "
-                                        f"-> go through ({remain:.0f}s)", (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    else:
-                        put_text(frame, f"QR OK: {entrance_session.member_id} - show your face ({remain:.0f}s)",
-                                 (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                active_sessions = [s for s in entrance_sessions if not s.done]
+                if active_sessions:
+                    for i, s in enumerate(active_sessions[:3]):
+                        remain = max(0.0, CO_TRAILING_WINDOW - (current_time - s.qr_time))
+                        y = 105 + 25 * i
+                        if s.authed:
+                            put_text(frame, f"AUTH OK: {s.member_id} sim={s.match_sim:.2f} "
+                                            f"-> go through ({remain:.0f}s)", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        else:
+                            put_text(frame, f"QR OK: {s.member_id} - show your face ({remain:.0f}s)",
+                                     (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 elif current_time < auth_banner["until"]:
                     put_text(frame, auth_banner["text"], (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_banner["color"], 2)
 
