@@ -1705,9 +1705,95 @@ def camera_processing_loop():
                 put_text(frame, f"IN: {state.in_count} | OUT: {state.out_count}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
             elif mode == "esthe":
-                put_text(frame, "MODE: [ESTHE (QR Entry + Camera Occupancy Monitor)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
-                # （エステモードの処理はそのまま維持）
+                put_text(frame, "MODE: [ESTHE (QR Entry & Occupancy Monitor)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+                
+                # 1️⃣ エステ室用のQRコード読み取りと入室処理
+                qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
+                if qr_bbox is not None and len(qr_bbox) > 0:
+                    pts = qr_bbox[0].astype(int)
+                    for i in range(4):
+                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (255, 0, 255), THICK)
+                    if qr_data and state.should_process_qr(qr_data, current_time):
+                        conn = get_conn(dict_cursor=True)
+                        try:
+                            member = _exec(conn, "SELECT member_id, name FROM members WHERE qr_token = %s", (qr_data,)).fetchone()
+                            if member:
+                                m_id = member["member_id"]
+                                m_name = member["name"]
+                                # 予約時間の前後15分以内で、まだ始まっていない予約を「利用中(in_progress)」にする
+                                res = _exec(conn, """
+                                    SELECT id FROM esthe_reservations 
+                                    WHERE member_id = %s AND status = 'reserved' 
+                                      AND start_time <= DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+                                      AND end_time >= NOW()
+                                    LIMIT 1
+                                """, (m_id,)).fetchone()
+                                if res:
+                                    _exec(conn, "UPDATE esthe_reservations SET status = 'in_progress', used_at = NOW() WHERE id = %s", (res["id"],))
+                                    conn.commit()
+                                    print(f"✨ 【エステ入室成功】 {m_name} (ID: {m_id}) が入室しました")
+                                else:
+                                    print(f"⚠️ 【エステ入室拒否】 有効な予約時間帯ではありません: {m_name}")
+                        except Exception as e:
+                            print(f"⚠️ エステ入室処理エラー: {e}")
+                        finally:
+                            conn.close()
 
+                # 2️⃣ エステ室の利用時間超過（長時間占有）を10秒おきにチェックする処理
+                if 'last_esthe_check' not in locals():
+                    last_esthe_check = 0.0
+                
+                if current_time - last_esthe_check > 10.0:
+                    last_esthe_check = current_time
+                    try:
+                        conn = get_conn(dict_cursor=True)
+                        overdue_res = _exec(conn, """
+                            SELECT r.id, r.member_id, r.start_time, r.end_time, m.name 
+                            FROM esthe_reservations r
+                            JOIN members m ON r.member_id = m.member_id
+                            WHERE r.status = 'in_progress' AND r.end_time < NOW()
+                        """).fetchall()
+                        
+                        for r in overdue_res:
+                            _exec(conn, "UPDATE esthe_reservations SET status = 'overtime' WHERE id = %s", (r["id"],))
+                            conn.commit()
+                            print(f"🚨 【エステ超過検知】 会員 {r['name']} ({r['member_id']}) が終了時刻 ({r['end_time']}) を過ぎてもエステ室に留まっています。")
+                            
+                            start_str = r["start_time"].strftime("%Y-%m-%d %H:%M:%S")
+                            end_str = r["end_time"].strftime("%Y-%m-%d %H:%M:%S")
+                            notify_esthe_over_async(r["member_id"], start_str, end_str)
+                            
+                        conn.close()
+                    except Exception as e:
+                        print(f"⚠️ エステ超過チェックエラー: {e}")
+
+                # 3️⃣ 【NEW】エステ室から人がいなくなったら自動で「完了(completed)」にする処理
+                if 'esthe_last_person_time' not in locals():
+                    esthe_last_person_time = current_time
+
+                # YOLOでエステ室内の「人（クラス0）」を検知
+                esthe_yolo_res = yolo_model(frame, classes=[0], imgsz=YOLO_IMGSZ, verbose=False)[0]
+                if len(esthe_yolo_res.boxes) > 0:
+                    esthe_last_person_time = current_time  # 人が映っていればタイマーをリセット
+                    for box in esthe_yolo_res.boxes.xyxy.cpu().numpy():
+                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 0, 255), 2)
+                else:
+                    # 人が誰もいない状態が「15秒間」続いたら、利用中(in_progress)の予約を自動完了にする
+                    if current_time - esthe_last_person_time > 15.0:
+                        try:
+                            conn = get_conn(dict_cursor=True)
+                            in_progress_res = _exec(conn, """
+                                SELECT id, member_id FROM esthe_reservations 
+                                WHERE status = 'in_progress'
+                            """).fetchall()
+                            
+                            for r in in_progress_res:
+                                _exec(conn, "UPDATE esthe_reservations SET status = 'completed' WHERE id = %s", (r["id"],))
+                                conn.commit()
+                                print(f"✨ 【エステ自動退出】 室内から人がいなくなったため、予約ID {r['id']} (会員ID: {r['member_id']}) を完了にしました。")
+                            conn.close()
+                        except Exception as e:
+                            print(f"⚠️ エステ自動完了処理エラー: {e}")
             else:
                 # ＝ トレーニングルームモード ＝
                 # （ルームモードの処理はそのまま維持）
