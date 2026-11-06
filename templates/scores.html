@@ -351,7 +351,7 @@
                         <th>SCORE</th>
                         <th>VISITS</th>
                         <th>TOTAL TIME</th>
-                        <th>PENALTIES (OVERTIME / ALERT)</th>
+                        <th>PENALTIES (MACHINE / ESTHE / ALERT)</th>
                     </tr>
                 </thead>
                 <tbody id="score-table-body">
@@ -416,12 +416,19 @@
                         <td>${item.total_duration_fmt}</td>
                         <td>
                             <span style="color: ${item.overtime_count > 0 ? 'var(--danger-color)' : 'inherit'};">
-                                超過: ${item.overtime_count}回
+                                マシン超過: ${item.overtime_count}回
+                            </span> / 
+                            <span style="color: ${item.esthe_overtime_count > 0 ? 'var(--danger-color)' : 'inherit'};">
+                                エステ超過: ${item.esthe_overtime_count}回
+                            </span> / 
+                            <span style="color: ${item.esthe_noshow_count > 0 ? 'var(--danger-color)' : 'inherit'};">
+                                無断キャン: ${item.esthe_noshow_count}回
                             </span> / 
                             <span style="color: ${item.alert_count > 0 ? 'var(--danger-color)' : 'inherit'};">
                                 共連れ: ${item.alert_count}回
                             </span>
-                            <span style="font-size: 0.75rem; color: var(--text-muted);">(-${item.penalty_points}pt)</span>
+                            <br>
+                            <span style="font-size: 0.75rem; color: var(--danger-color); font-weight: bold;">(-${item.penalty_points}pt)</span>
                         </td>
                     `;
                     tbody.appendChild(tr);

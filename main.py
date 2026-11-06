@@ -27,10 +27,28 @@ from pydantic import BaseModel
 import uvicorn
 from starlette.middleware.sessions import SessionMiddleware
 
+from dotenv import load_dotenv
+load_dotenv()
+
+# 🔒 パスワードハッシュ化の設定
+from passlib.context import CryptContext
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def get_password_hash(password: str) -> str:
+    """平文のパスワードをハッシュ化する"""
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """入力されたパスワードが、ハッシュ値と一致するか検証する"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+
 # テンプレートエンジンの準備
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key")
 app.add_middleware(SessionMiddleware, secret_key="your-secret-key-here")
 
 # グローバル変数として追加
@@ -69,11 +87,11 @@ FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有�
 FACE_MATCH_THRESHOLD = 0.60   # 顔が一致したとみなすコサイン類似度（入口の1:1判定。ログを見て調整）
 ROOM_FACE_THRESHOLD = 0.60    # ルームモードの1:N判定用。部屋のカメラは遠い・斜めで類似度が低めになりやすいので、画面の best= を見て下げる
 
-# 📧 メール送信設定（実際の運用に合わせて書き換えてください）
+# 📧 メール送信設定（環境変数から安全に読み込む）
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-SENDER_EMAIL = "chocozap123456@gmail.com"  # 送信元のメールアドレス
-SENDER_PASSWORD = "rfrlsheyiuzhyubg"   # アプリパスワード等
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "chocozap123456@gmail.com")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")   # 🔒 コード内からパスワードを排除
 
 # 🚨 違反メール：マシンの利用時間が上限を超えた会員に、利用の終了時にメールで違反内容を知らせる
 VIOLATION_MAIL_ENABLED = True       # False にするとメールを送らない
@@ -243,6 +261,19 @@ def init_database():
             INDEX idx_occupancy_member (member_id)
         ) DEFAULT CHARSET=utf8mb4
     """)
+    # エステ予約マスタテーブルの拡張
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS esthe_reservations (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            member_id VARCHAR(32) {BIN} NOT NULL,
+            start_time DATETIME NOT NULL,
+            end_time DATETIME NOT NULL,
+            status VARCHAR(20) DEFAULT 'reserved', -- 'reserved', 'in_progress', 'completed', 'no_show', 'overtime'
+            used_at DATETIME DEFAULT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_esthe_time (start_time, end_time)
+        ) DEFAULT CHARSET=utf8mb4
+    """)
     # 以前に作った（列が足りない）テーブルにも対応
     _ensure_column(cursor, "occupancy_logs", "machine", "VARCHAR(50)")
     _ensure_column(cursor, "passing_logs", "note", "TEXT")
@@ -334,6 +365,75 @@ def notify_overtime_async(member_id, machine_key, start, end, duration):
 
     threading.Thread(target=worker, daemon=True).start()
 
+def _send_notification_mail(member_id, subject, body):
+    """指定した会員に任意の件名・本文のメールを送る共通ヘルパー"""
+    try:
+        conn = get_conn()
+        try:
+            row = _exec(conn, "SELECT name, email FROM members WHERE member_id = %s", (member_id,)).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"⚠️ 通知メール：会員情報の取得に失敗: {e}")
+        return False
+
+    if row is None or not row[1]:
+        print(f"⚠️ 通知メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
+        return False
+    name, email = row
+
+    full_body = f"{name} 様\n\n{body}\n\nジムセキュリティ管理システム"
+    
+    from email.header import Header
+    msg = MIMEMultipart()
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = email
+    msg.attach(MIMEText(full_body, "plain", "utf-8"))
+    
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, email, msg.as_string())
+    except Exception as e:
+        print(f"⚠️ 通知メールの送信に失敗（{name} / {member_id}）: {e}")
+        return False
+    print(f"📧 【通知メール送信成功】 {name}（{member_id}）宛：{subject}")
+    return True
+
+def notify_esthe_over_async(member_id, start_str, end_str):
+    """エステ室の長期占有超過メールを非同期送信"""
+    if not VIOLATION_MAIL_ENABLED or not member_id: return
+    def worker():
+        _send_notification_mail(
+            member_id,
+            "【ジムセキュリティ】エステ室の利用時間超過に関するお知らせ",
+            f"エステ室のご利用時間が終了時刻を過ぎて留まっていることが検知されました。\n\n■ 予約時間：{start_str} 〜 {end_str}\n\n速やかにご退出をお願いいたします。"
+        )
+    threading.Thread(target=worker, daemon=True).start()
+
+def notify_esthe_noshow_async(member_id, start_str):
+    """エステ無断キャンセルメールを非同期送信"""
+    if not VIOLATION_MAIL_ENABLED or not member_id: return
+    def worker():
+        _send_notification_mail(
+            member_id,
+            "【ジムセキュリティ】エステ室のご予約についての確認（無断キャンセル）",
+            f"ご予約いただいていたエステ室の時間にお越しいただけなかったため、無断キャンセル（No-Show）として処理されました。\n\n■ 予約開始時間：{start_str}\n\nペナルティポイントが加算されますのでご注意ください。"
+        )
+    threading.Thread(target=worker, daemon=True).start()
+
+def notify_cotrailing_async(member_id, timestamp_str):
+    """共連れ・不正入館の警告メールを非同期送信"""
+    if not VIOLATION_MAIL_ENABLED or not member_id: return
+    def worker():
+        _send_notification_mail(
+            member_id,
+            "【ジムセキュリティ】入館ルール違反（共連れ）に関する警告",
+            f"入館ゲートにおいて、お客様の認証直後に未登録の同行者を侵入させた（共連れ）ことが検知されました。\n\n■ 検知日時：{timestamp_str}\n\n利用規約違反となりますので、今後のご利用には十分ご注意ください。"
+        )
+    threading.Thread(target=worker, daemon=True).start()
 # =========================================================================
 # 💾 データベース書き込みのキュー化（ロック競合防止用）
 # =========================================================================
@@ -661,6 +761,31 @@ class SystemStateManager:
             room_time = max(m["duration"] for m in in_use)
             room_overtime = any(m["status"] == "overtime" for m in in_use)
 
+        # 📝 エステ室の現在の状態をデータベースから取得してpayloadに含める
+        esthe_user_name = "-"
+        esthe_status_str = "FREE"
+        try:
+            conn_e = get_conn(dict_cursor=True)
+            cur_e = conn_e.cursor()
+            cur_e.execute("""
+                SELECT r.id, m.name, r.status, r.end_time 
+                FROM esthe_reservations r
+                JOIN members m ON r.member_id = m.member_id
+                WHERE r.status IN ('in_progress', 'overtime')
+                LIMIT 1
+            """)
+            active_esthe = cur_e.fetchone()
+            conn_e.close()
+
+            if active_esthe:
+                esthe_user_name = active_esthe["name"]
+                if active_esthe["status"] == "overtime":
+                    esthe_status_str = "OVERTIME"
+                else:
+                    esthe_status_str = "USING"
+        except Exception as e:
+            print(f"⚠️ エステ状態の取得エラー: {e}")
+
         return {
             "active_mode": current_active_mode,
             "in_count": self.in_count,
@@ -671,7 +796,10 @@ class SystemStateManager:
             "accumulated_time": room_time,
             "is_overtime": room_overtime,
             "machines": machines_payload,
-            "logs": logs_payload
+            "logs": logs_payload,
+            # 📝 追加：エステ室のリアルタイム情報
+            "esthe_user": esthe_user_name,
+            "esthe_status": esthe_status_str
         }
 
     def push_update(self):
@@ -1327,10 +1455,9 @@ def camera_processing_loop():
             state.set_alert(True)
             # ログには「Aさんの共連れ」として記録
             state.register_pass("IN", f"Co-trailing by {suspect_member}", 1, note=reason_note)
-            # 使ったQRは consumed 済み。ほかに有効なQRが残っていなければ、画面側のQR情報もリセットする
-            if not any(s.grant_valid(now) for s in sessions):
-                state.last_scanned_qr = "None"
-                state.last_qr_time = 0.0
+            
+            # 📝 追加入力：共連れした会員（suspect.member_id）へ警告メールを送信
+            notify_cotrailing_async(suspect.member_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         else:
             print(f"🚨 【未認証侵入】 QRなしでの通過を検知 (ID:{tid})")
             state.set_alert(True)
@@ -1597,6 +1724,93 @@ def camera_processing_loop():
                 elif current_time < auth_banner["until"]:
                     put_text(frame, auth_banner["text"], (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_banner["color"], 2)
 
+            elif mode == "esthe":
+                put_text(frame, "MODE: [ESTHE (QR Entry + Camera Occupancy Monitor)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
+                # 1. YOLOで部屋の中に人がいるかチェック
+                person_detected = False
+                yolo_results = yolo_model(frame, classes=[0], imgsz=YOLO_IMGSZ, verbose=False)
+                if yolo_results[0].boxes is not None and len(yolo_results[0].boxes) > 0:
+                    person_detected = True
+                    for box in yolo_results[0].boxes.xyxy.cpu().numpy():
+                        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+
+                # 2. データベースから現在「利用中 (in_progress)」の予約を監視する
+                now_dt = datetime.now()
+                conn = get_conn(dict_cursor=True)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, member_id, end_time FROM esthe_reservations 
+                    WHERE status = 'in_progress'
+                """)
+                active_reservations = cursor.fetchall()
+
+                for res in active_reservations:
+                    res_id = res['id']
+                    m_id = res['member_id']
+                    end_time = res['end_time']
+
+                    if now_dt > end_time and person_detected:
+                        print(f"⚠️ 【エステ長期占有検知】 会員ID: {m_id} が予約終了時刻を過ぎて居座っています")
+                        execute_db_write(
+                            "UPDATE esthe_reservations SET status = 'overtime', used_at = %s WHERE id = %s",
+                            (now_dt, res_id)
+                        )
+                        state.register_pass("ESTHE_OVER", f"Member ({m_id})", 1, note=f"エステ長期占有・時間超過（予約ID: {res_id}）")
+                        
+                        # 📝 追加入力：エステ超過メール送信
+                        notify_esthe_over_async(m_id, str(res.get('start_time')), str(end_time))
+
+                    # B. 部屋から人がいなくなった場合 ➔ 正常終了（完了）
+                    elif not person_detected:
+                        print(f"✅ 【エステ退室検知】 会員ID: {m_id} の利用が終了しました（空室確認）")
+                        execute_db_write(
+                            "UPDATE esthe_reservations SET status = 'completed', used_at = %s WHERE id = %s",
+                            (now_dt, res_id)
+                        )
+                        state.register_pass("ESTHE_OUT", f"Member ({m_id})", 0, note=f"エステ自動退室完了（予約ID: {res_id}）")
+
+                conn.close()
+
+                # 3. QRコードが読まれたときの処理（入室受付用）
+                qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
+                if qr_bbox is not None and len(qr_bbox) > 0:
+                    pts = qr_bbox[0].astype(int)
+                    for i in range(4):
+                        cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (255, 0, 255), THICK)
+
+                    if qr_data and state.should_process_qr(qr_data, current_time):
+                        conn = get_conn(dict_cursor=True)
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT member_id, name FROM members WHERE qr_token = %s", (qr_data,))
+                        member = cursor.fetchone()
+                        
+                        if member:
+                            m_id = member['member_id']
+                            m_name = member['name']
+                            
+                            # 有効な予約（reserved）を探して「利用中 (in_progress)」に切り替える
+                            cursor.execute("""
+                                SELECT id, start_time, end_time FROM esthe_reservations 
+                                WHERE member_id = %s 
+                                  AND status = 'reserved'
+                                  AND %s BETWEEN DATE_SUB(start_time, INTERVAL 10 MINUTE) AND DATE_ADD(end_time, INTERVAL 10 MINUTE)
+                            """, (m_id, now_dt))
+                            reserved_res = cursor.fetchone()
+                            
+                            if reserved_res:
+                                print(f"🔓 【エステ入室受付】 {m_name} 様の入室を確認しました")
+                                execute_db_write(
+                                    "UPDATE esthe_reservations SET status = 'in_progress' WHERE id = %s",
+                                    (reserved_res['id'],)
+                                )
+                                state.register_pass("ESTHE_IN", f"{m_name} ({m_id})", 0, note=f"エステ入室（予約ID: {reserved_res['id']}）")
+                                put_text(frame, f"WELCOME: {m_name}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            else:
+                                print(f"❌ {m_name} 様の有効な予約時間ではありません")
+                                put_text(frame, f"NO VALID RESERVATION", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        conn.close()
+
             else:
                 # ＝ トレーニングルームモード（椅子検知 ＋ 座り判定）＝
                 member_ids, member_names, member_matrix = member_cache.get()
@@ -1824,6 +2038,9 @@ def console_switcher_thread():
                 if active_mode == "entrance":
                     active_mode = "room"
                     print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】")
+                elif active_mode == "room":
+                    active_mode = "esthe"
+                    print("\n🔄 【モード切替】 ➔ 【エステ室・予約照合モード】")
                 else:
                     active_mode = "entrance"
                     print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】")
@@ -1839,6 +2056,44 @@ connected_websockets = []
 @app.get("/register", response_class=HTMLResponse)
 def get_register_page(request: Request):
     return templates.TemplateResponse(request, "register.html", {})
+
+# 📝 【追加】エステ予約用リクエストモデル
+class EstheReserveRequest(BaseModel):
+    member_id: str
+    start_time: str  # 例: "2026-11-06 14:00:00"
+
+# 📝 【追加】エステ予約登録API
+@app.post("/api/esthe/reserve")
+def api_reserve_esthe(data: EstheReserveRequest):
+    try:
+        from datetime import timedelta
+        start_dt = datetime.strptime(data.start_time, "%Y-%m-%d %H:%M:%S")
+        end_dt = start_dt + timedelta(minutes=20) # 20分枠
+        
+        conn = get_conn(dict_cursor=True)
+        cursor = conn.cursor()
+        
+        # 既に埋まっていないかチェック
+        cursor.execute(
+            "SELECT id FROM esthe_reservations WHERE start_time = %s AND status = 'reserved'",
+            (start_dt,)
+        )
+        if cursor.fetchone():
+            conn.close()
+            return {"status": "error", "message": "この時間帯は既に予約されています。"}
+            
+        execute_db_write(
+            "INSERT INTO esthe_reservations (member_id, start_time, end_time) VALUES (%s, %s, %s)",
+            (data.member_id, start_dt, end_dt)
+        )
+        conn.close()
+        return {"status": "success", "message": "エステの予約が完了しました。"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/portal", response_class=HTMLResponse)
+def get_user_portal(request: Request):
+    return templates.TemplateResponse(request, "portal.html", {})
 
 @app.post("/api/register")
 def api_register(data: RegisterRequest):
@@ -1905,6 +2160,15 @@ def api_register(data: RegisterRequest):
         print(f"登録エラー: {e}")
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
+
+# 📝 【追加】エステ予約画面を表示するルーティング
+@app.get("/esthe", response_class=HTMLResponse)
+def get_esthe_page(request: Request):
+    # 管理者ログインを必須にする場合はこの行を残します（不要なら消してもOKです）
+    if "admin_user" not in request.session:
+        return RedirectResponse(url="/admin/login", status_code=303)
+    
+    return templates.TemplateResponse(request, "esthe.html", {})
 
 @app.get("/video")
 async def video_feed():
@@ -1992,28 +2256,62 @@ def calculate_member_score(conn, member_id):
     )
     usages = cursor.fetchall()
     total_duration_sec = sum(u[0] or 0 for u in usages)
-    
+
+    # 🔴 【追加・修正】マシン利用の超過回数を計算するロジック
     overtime_count = 0
-    for dur, m_key in usages:
-        limit = MACHINE_LIMITS.get(m_key, {}).get("limit", 0)
-        if limit > 0 and (dur or 0) > limit:
+    for duration, machine_key in usages:
+        info = MACHINE_LIMITS.get(machine_key, {})
+        limit = info.get("limit", 0.0)
+        if limit > 0 and (duration or 0) > limit:
             overtime_count += 1
+    
+    # 無断キャンセルになる対象をあらかじめ取得してメールを送りつつステータス更新
+    cursor.execute("""
+        SELECT id, start_time FROM esthe_reservations 
+        WHERE member_id = %s AND status = 'reserved' AND end_time < NOW()
+    """, (member_id,))
+    noshow_targets = cursor.fetchall()
+
+    if noshow_targets:
+        cursor.execute("""
+            UPDATE esthe_reservations 
+            SET status = 'no_show' 
+            WHERE member_id = %s AND status = 'reserved' AND end_time < NOW()
+        """, (member_id,))
+        conn.commit()
+        
+        # 📝 追加入力：該当する無断キャンセルそれぞれにメールを非同期送信
+        for ns in noshow_targets:
+            ns_id = ns[0] if isinstance(ns, tuple) else ns['id']
+            ns_start = ns[1] if isinstance(ns, tuple) else ns['start_time']
+            notify_esthe_noshow_async(member_id, str(ns_start))
+
+    # エステ無断キャンセル回数
+    cursor.execute(
+        "SELECT COUNT(*) FROM esthe_reservations WHERE member_id = %s AND status = 'no_show'",
+        (member_id,)
+    )
+    esthe_noshow_count = cursor.fetchone()[0] or 0
+
+    # エステ時間超過回数
+    cursor.execute(
+        "SELECT COUNT(*) FROM esthe_reservations WHERE member_id = %s AND status = 'overtime'",
+        (member_id,)
+    )
+    esthe_overtime_count = cursor.fetchone()[0] or 0
 
     # --- スコア計算 ---
-    # (a) 来館スコア: 1回につき5pt (最大40pt)
     visit_score = min(40, normal_visit_count * 5)
-
-    # (b) 利用時間スコア: 10分(600秒)につき5pt (最大40pt)
     usage_score = min(40, int((total_duration_sec / 600) * 5))
 
-    # (c) ペナルティ控除
-    # - 時間超過 1回につき -10pt
-    # - 共連れ・不正アラート 1回につき -20pt
-    penalty_points = (overtime_count * 10) + (alert_count * 20)
+    # 📝 【ペナルティ強化】エステの違反も減点対象に含める
+    # - マシン超過: 1回 -10pt
+    # - 共連れアラート: 1回 -20pt
+    # - エステ無断キャンセル: 1回 -15pt
+    # - エステ時間超過: 1回 -10pt
+    penalty_points = (overtime_count * 10) + (alert_count * 20) + (esthe_noshow_count * 15) + (esthe_overtime_count * 10)
 
-    # 総合スコア（0点〜100点の間に収める）
-    base_score = visit_score + usage_score
-    total_score = max(0, min(100, base_score - penalty_points))
+    total_score = max(0, min(100, (visit_score + usage_score) - penalty_points))
 
     # ランク判定
     if total_score >= 80:
@@ -2029,10 +2327,12 @@ def calculate_member_score(conn, member_id):
         "total_score": total_score,
         "rank": rank,
         "visit_count": normal_visit_count,
-        "alert_count": alert_count,          # 共連れ等の検知回数
+        "alert_count": alert_count,
         "total_duration_fmt": _fmt_seconds(total_duration_sec),
-        "overtime_count": overtime_count,    # 時間超過回数
-        "penalty_points": penalty_points     # 合計ペナルティ減点
+        "overtime_count": overtime_count,
+        "esthe_noshow_count": esthe_noshow_count, # 📝 画面表示用に返す場合に追加
+        "esthe_overtime_count": esthe_overtime_count, # 📝 追加
+        "penalty_points": penalty_points
     }
 
 
@@ -2084,17 +2384,18 @@ async def read_index(request: Request):
 
 @app.post("/api/admin/login")
 def api_admin_login(request: Request, data: AdminAuthRequest):
-    conn = get_conn()
+    conn = get_conn(dict_cursor=True) # 🔑 カラム名でアクセスできるようにする
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM admins WHERE username = %s AND password = %s", (data.username, data.password))
+    cursor.execute("SELECT * FROM admins WHERE username = %s", (data.username,))
     user = cursor.fetchone()
     conn.close()
 
-    if user:
+    # 🔒 取得したハッシュ化パスワードと入力されたパスワードを安全に検証
+    if user and verify_password(data.password, user["password"]):
         request.session["admin_user"] = data.username
         return {"status": "success"}
     else:
-        return {"status": "error", "message": "IDまたはパスワードが違います"}
+        return JSONResponse({"status": "error", "message": "IDまたはパスワードが違います"}, status_code=400)
 
 @app.get("/admin/logout")
 async def admin_logout(request: Request):
@@ -2183,6 +2484,26 @@ def api_get_member_detail(member_id: str, request: Request):
         "usages": usages,
     }
 
+@app.get("/api/admin/recent-alerts")
+def api_get_recent_alerts(request: Request):
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
+    
+    conn = get_conn(dict_cursor=True)
+    cursor = conn.cursor()
+    # 警告フラグが立った passing_logs や、違反などのログを新しい順に取得
+    cursor.execute("""
+        SELECT timestamp, 'passing' AS type, member_id AS detail, note AS message 
+        FROM passing_logs WHERE is_alert = 1 
+        UNION ALL
+        SELECT start_time AS timestamp, 'machine' AS type, member_id AS detail, machine AS message 
+        FROM occupancy_logs 
+        ORDER BY timestamp DESC LIMIT 5
+    """)
+    alerts = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {"status": "success", "alerts": alerts}
+
 @app.get("/admin/logs", response_class=HTMLResponse)
 def get_admin_logs_page(request: Request):
     if "admin_user" not in request.session:
@@ -2235,10 +2556,20 @@ def api_get_logs(request: Request):
     cursor.execute("SELECT member_id, name FROM members")
     names = {row["member_id"]: row["name"] for row in cursor.fetchall()}
 
-    logs = []
+    logs = []  # 🔴 【修正】ここで空のリストを初期化する必要があります！
+
     cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
     for r in cursor.fetchall():
-        logs.append({"kind": "gate", "ref": str(r["id"]), "display_id": f"G-{r['id']}", "type": "gate",
+        d = r["direction"]
+        # 📝 エステのログ（ESTHE_OK / ESTHE_NG）なら type を 'esthe' に分類する
+        if d in ("IN", "OUT"):
+            l_type = "gate"
+            prefix = "G"
+        else:
+            l_type = "esthe"
+            prefix = "E"
+            
+        logs.append({"kind": "gate", "ref": str(r["id"]), "display_id": f"{prefix}-{r['id']}", "type": l_type,
                      "timestamp": r["timestamp"], "event": r["direction"], "member": r["member_id"],
                      "status": "alert" if r["is_alert"] == 1 else "normal", "duration": None})
 
@@ -2347,9 +2678,10 @@ def get_admin_register_page(request: Request):
 @app.post("/api/admin/register")
 def api_admin_register(data: AdminAuthRequest):
     try:
+        hashed_password = get_password_hash(data.password) # 🔒 ハッシュ化
         conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO admins (username, password) VALUES (%s, %s)", (data.username, data.password))
+        cursor.execute("INSERT INTO admins (username, password) VALUES (%s, %s)", (data.username, hashed_password))
         conn.commit()
         conn.close()
         return {"status": "success"}

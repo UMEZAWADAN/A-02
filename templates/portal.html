@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>会員ポータル - CHOCOZAP SECURITY</title>
+    <style>
+        :root {
+            --bg-color: #fcfbf9;
+            --surface-card: #ffffff;
+            --surface-alt: #f4f3ef;
+            --border-color: #e6e4dc;
+            --text-main: #2c2c2e;
+            --text-muted: #6e6e73;
+            --accent-warm: #ff7a00;
+            --radius-lg: 16px;
+            --radius-sm: 8px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", YuGothic, "Meiryo", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .portal-container {
+            max-width: 1000px;
+            width: 100%;
+        }
+
+        /* 🔒 ログインカード */
+        .login-card {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 40px;
+            max-width: 420px;
+            margin: 60px auto;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+            text-align: center;
+        }
+
+        .login-card h2 {
+            margin-top: 0;
+            font-size: 1.4rem;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            box-sizing: border-box;
+            font-size: 1rem;
+            background: var(--surface-alt);
+        }
+
+        /* 👤 マイページエリア（初期状態は非表示） */
+        #portal-content {
+            display: none;
+        }
+
+        .portal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 32px;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 16px;
+        }
+
+        .portal-title h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            margin: 0 0 4px 0;
+        }
+        .portal-title h1 span { color: var(--accent-warm); }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: var(--surface-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 28px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+        }
+
+        .status-content {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .rank-badge {
+            width: 64px;
+            height: 64px;
+            background: linear-gradient(135deg, #f4a261, #e76f51);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            font-weight: 900;
+            font-family: Impact, sans-serif;
+        }
+
+        .btn {
+            width: 100%;
+            background: var(--text-main);
+            color: white;
+            padding: 12px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        .btn-logout {
+            background: #ff2a5f;
+            padding: 6px 14px;
+            font-size: 0.8rem;
+            width: auto;
+        }
+
+        .activity-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        .activity-table th, .activity-table td {
+            padding: 12px 14px;
+            text-align: left;
+            font-size: 0.88rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .activity-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="portal-container">
+
+        <!-- 🔑 1. ログインフォーム（未ログイン時） -->
+        <div id="login-section" class="login-card">
+            <h2>CHOCOZAP <span>MEMBER LOGIN</span></h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 24px;">登録したメールアドレスを入力してログインしてください</p>
+            
+            <form id="login-form" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label for="email-input">メールアドレス</label>
+                    <input type="email" id="email-input" placeholder="example@email.com" required>
+                </div>
+                <button type="submit" class="btn">ログイン</button>
+            </form>
+            <p id="login-error" style="color: #ff2a5f; font-size: 0.85rem; margin-top: 12px; display: none;"></p>
+        </div>
+
+        <!-- 👤 2. マイページ（ログイン後） -->
+        <div id="portal-content">
+            <div class="portal-header">
+                <div class="portal-title">
+                    <h1>CHOCOZAP <span>PORTAL</span></h1>
+                    <p>会員専用マイページ</p>
+                </div>
+                <div>
+                    👋 おかえりなさい、<strong id="user-name-display">-</strong> 様
+                    <button onclick="handleLogout()" class="btn btn-logout" style="margin-left: 10px;">ログアウト</button>
+                </div>
+            </div>
+
+            <div class="dashboard-grid">
+                <!-- マイステータス -->
+                <div class="card">
+                    <h2>🏆 マイステータス & ランク</h2>
+                    <div class="status-content">
+                        <div class="rank-badge" id="rank-badge-display">-</div>
+                        <div>
+                            <p style="margin: 4px 0;">ランク: <strong id="rank-name-display">-</strong></p>
+                            <p style="margin: 4px 0;">今月の来店回数: <strong id="visit-count-display">0回</strong></p>
+                            <p style="margin: 4px 0;">総利用時間: <strong id="total-time-display">0分</strong></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- エステ予約 -->
+                <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+                    <div>
+                        <h2>✨ エステブース予約</h2>
+                        <div style="background: var(--surface-alt); padding: 14px; border-radius: var(--radius-sm); margin-top: 10px;">
+                            <p style="margin: 0 0 4px 0; font-size: 0.85rem; color: var(--text-muted);">次回の予約</p>
+                            <p style="margin: 0; font-weight: 700;" id="esthe-reservation-display">確認中...</p>
+                        </div>
+                    </div>
+                    <a href="/esthe" class="btn" style="margin-top: 16px;">エステを予約する</a>
+                </div>
+            </div>
+
+            <!-- 利用履歴 -->
+            <div class="card">
+                <h2>📊 直近のマシン利用履歴</h2>
+                <table class="activity-table">
+                    <thead>
+                        <tr>
+                            <th>利用日時</th>
+                            <th>マシン名</th>
+                            <th>利用時間</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usage-history-body">
+                        <tr><td colspan="3" style="text-align: center; color: var(--text-muted);">読み込み中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // ページ読み込み時にログイン状態をチェック
+        async function checkLogin() {
+            try {
+                const res = await fetch('/api/member/me');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    showPortal(data);
+                } else {
+                    showLogin();
+                }
+            } catch (e) {
+                showLogin();
+            }
+        }
+
+        // ログイン処理
+        async function handleLogin(e) {
+            e.preventDefault();
+            const email = document.getElementById('email-input').value;
+            const errorEl = document.getElementById('login-error');
+            errorEl.style.display = 'none';
+
+            const res = await fetch('/api/member/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email })
+            });
+
+            const data = await res.json();
+            if (data.status === 'success') {
+                checkLogin();
+            } else {
+                errorEl.innerText = data.message || 'ログインに失敗しました。';
+                errorEl.style.display = 'block';
+            }
+        }
+
+        // ログアウト処理
+        async function handleLogout() {
+            await fetch('/api/member/logout', { method: 'POST' });
+            showLogin();
+        }
+
+        function showLogin() {
+            document.getElementById('login-section').style.display = 'block';
+            document.getElementById('portal-content').style.display = 'none';
+        }
+
+        function showPortal(data) {
+            document.getElementById('login-section').style.display = 'none';
+            document.getElementById('portal-content').style.display = 'block';
+
+            const m = data.member;
+            const s = data.score;
+
+            document.getElementById('user-name-display').innerText = m.name;
+            document.getElementById('rank-badge-display').innerText = s.rank;
+            document.getElementById('rank-name-display').innerText = s.rank + 'ランク';
+            document.getElementById('visit-count-display').innerText = s.visit_count + '回';
+            document.getElementById('total-time-display').innerText = s.total_duration_fmt;
+
+            // エステ予約表示
+            document.getElementById('esthe-reservation-display').innerText = data.next_esthe || '予約なし';
+
+            // 利用履歴テーブル
+            const tbody = document.getElementById('usage-history-body');
+            tbody.innerHTML = '';
+            if (!data.usages || data.usages.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-muted);">利用履歴がありません。</td></tr>';
+            } else {
+                data.usages.forEach(u => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${u.start_time}</td>
+                        <td style="font-weight: 700;">${u.machine}</td>
+                        <td>${Math.round(u.duration / 60)}分</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', checkLogin);
+    </script>
+</body>
+</html>

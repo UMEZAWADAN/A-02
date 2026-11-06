@@ -423,6 +423,7 @@
         </div>
 
         <div class="cyber-panel">
+            <!-- 入口ゲートモード用セクション -->
             <div id="section-entrance" class="mode-section active-mode">
                 <h2>ENTRANCE GATE (YOLO + QR)</h2>
                 <table class="cyber-table" style="margin-top: 10px;">
@@ -442,6 +443,7 @@
                 <div id="co-trailing-alert" class="cyber-alert">CRITICAL: CO-TRAILING DETECTED</div>
             </div>
 
+            <!-- トレーニングルームモード用セクション -->
             <div id="section-room" class="mode-section">
                 <h2>TRAINING ROOM (FACE RECOGNITION)</h2>
                 <table class="cyber-table" style="margin-top: 10px;">
@@ -477,8 +479,32 @@
                 </table>
                 <div id="machine-alert-box" class="cyber-alert">WARNING: MACHINE OVERTIME</div>
             </div>
-        </div>
-    </div>
+
+            <div id="section-esthe" class="mode-section">
+                <h2>ESTHE BOOTH (OCCUPANCY MONITOR)</h2>
+                <table class="cyber-table" style="margin-top: 10px;">
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">現在の利用者</td>
+                        <td id="esthe-user" style="font-weight: 700; font-family: monospace;">-</td>
+                    </tr>
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">利用ステータス</td>
+                        <td id="esthe-room-status">
+                            <span class="badge badge-machine-free">FREE</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="color: var(--text-muted); text-align: left;">直近のアクション</td>
+                        <td id="esthe-last-qr" style="font-family: monospace; font-weight: 700;">待機中...</td>
+                    </tr>
+                </table>
+                <div id="esthe-alert-box" class="cyber-alert">WARNING: ESTHE LONG-TERM OCCUPANCY</div>
+                <div style="margin-top: 20px; font-size: 0.8rem; color: var(--text-muted); font-family: monospace; line-height: 1.5;">
+                    // 入室時はQRで受付、退室時はカメラが自動検知します。時間超過時は違反となります。
+                </div>
+            </div>
+        </div> <!-- 👈 【追加】2つ目の cyber-panel を閉じるタグ -->
+    </div> 
 
     <div class="cyber-panel-full">
         <h2>REAL-TIME ACCESS LOGS</h2>
@@ -543,7 +569,6 @@
         let ws = null;
         let reconnectTimer = null;
 
-        // 切断されたら自動で再接続する（サーバー再起動やネットワーク切れで画面が止まったままにならないように）
         function connectWebSocket() {
             ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
             ws.onmessage = handleMessage;
@@ -561,17 +586,47 @@
             const modeText = document.getElementById('current-mode-text');
             const secEntrance = document.getElementById('section-entrance');
             const secRoom = document.getElementById('section-room');
+            const secEsthe = document.getElementById('section-esthe');
+
+            // すべてのモードセクションの active-mode をいったん外す
+            secEntrance.classList.remove('active-mode');
+            secRoom.classList.remove('active-mode');
+            if (secEsthe) secEsthe.classList.remove('active-mode');
 
             if (data.active_mode === 'entrance') {
                 modeText.innerText = "ENTRANCE_GATE";
                 secEntrance.classList.add('active-mode');
-                secRoom.classList.remove('active-mode');
+            } else if (data.active_mode === 'esthe') {
+                modeText.innerText = "ESTHE_BOOTH";
+                if (secEsthe) secEsthe.classList.add('active-mode');
+                
+                // 📝 追加：エステ室のデータを画面に反映
+                const estheQr = document.getElementById('esthe-last-qr');
+                if (estheQr) estheQr.innerText = data.last_qr || 'None';
+
+                const estheUser = document.getElementById('esthe-user');
+                if (estheUser) estheUser.innerText = data.esthe_user || '-';
+
+                const estheStatusTd = document.getElementById('esthe-room-status');
+                const estheAlertBox = document.getElementById('esthe-alert-box');
+
+                if (estheStatusTd) {
+                    if (data.esthe_status === 'USING') {
+                        estheStatusTd.innerHTML = '<span class="badge badge-machine-using">USING</span>';
+                        if (estheAlertBox) estheAlertBox.classList.remove('active');
+                    } else if (data.esthe_status === 'OVERTIME') {
+                        estheStatusTd.innerHTML = '<span class="badge badge-machine-overtime">OVERTIME</span>';
+                        if (estheAlertBox) estheAlertBox.classList.add('active');
+                    } else {
+                        estheStatusTd.innerHTML = '<span class="badge badge-machine-free">FREE</span>';
+                        if (estheAlertBox) estheAlertBox.classList.remove('active');
+                    }
+                }
+
             } else {
                 modeText.innerText = "TRAINING_ROOM";
                 secRoom.classList.add('active-mode');
-                secEntrance.classList.remove('active-mode');
             }
-
             document.getElementById('in-count').innerText = data.in_count;
             document.getElementById('out-count').innerText = data.out_count;
             document.getElementById('last-qr').innerText = data.last_qr;

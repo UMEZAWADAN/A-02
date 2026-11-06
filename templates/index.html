@@ -45,7 +45,6 @@
             width: 100%;
             box-sizing: border-box;
             padding: 40px 0;
-            text-align: center;
         }
 
         /* 共通ヘッダー */
@@ -149,9 +148,10 @@
             background-color: var(--danger-color);
         }
 
-        /* ホーム画面用カードエリア */
+        /* ヒーロー＆速報エリア */
         .hero-section {
-            margin-bottom: 40px;
+            margin-bottom: 30px;
+            text-align: center;
         }
         .hero-section h2 {
             font-family: monospace;
@@ -165,62 +165,62 @@
             color: var(--text-muted);
             font-size: 0.95rem;
             font-family: monospace;
+            margin: 0;
         }
 
-        .portal-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 24px;
-            margin-top: 30px;
-        }
-
-        .portal-card {
+        .alert-ticker-container {
             background: var(--surface-card);
             border: 1px solid var(--border-color);
             border-radius: 4px;
-            padding: 30px 24px;
-            text-decoration: none;
-            color: var(--text-main);
-            text-align: left;
-            transition: all 0.2s ease;
+            padding: 24px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.02);
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
+            max-width: 800px;
+            margin: 0 auto;
         }
-        .portal-card:hover {
-            border-color: var(--text-main);
-            transform: translateY(-2px);
-            box-shadow: 0 8px 30px rgba(0,0,0,0.05);
-        }
-        .portal-card h3 {
-            margin: 0 0 10px 0;
-            font-family: monospace;
-            font-size: 1rem;
+
+        .alert-ticker-container h3 {
+            margin-top: 0;
+            font-size: 0.9rem;
             font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--danger-color);
+            border-bottom: 2px solid var(--text-main);
+            padding-bottom: 10px;
+            font-family: monospace;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .alert-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .alert-table th, .alert-table td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.85rem;
+            text-align: left;
+            font-family: monospace;
+        }
+        .alert-table th {
+            background: var(--surface-alt);
+            color: var(--text-muted);
+            font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .portal-card p {
-            margin: 0;
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            font-family: monospace;
-            line-height: 1.5;
-        }
-        .portal-card .card-action {
-            margin-top: 20px;
-            font-family: monospace;
-            font-size: 0.75rem;
             font-weight: 800;
-            text-transform: uppercase;
-            color: var(--text-main);
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
+        }
+        .badge-alert {
+            background: #ffe6eb;
+            color: var(--danger-color);
+            border: 1px solid #ffadb8;
+            padding: 2px 8px;
+            border-radius: 2px;
+            font-weight: 800;
+            font-size: 0.7rem;
         }
 
         /* フッター */
@@ -333,33 +333,26 @@
     <div class="page-content">
         <div class="hero-section">
             <h2>COMMAND CENTER PORTAL</h2>
-            <p>// SELECT A MODULE TO PROCEED</p>
+            <p>// SYSTEM OPERATIONAL - RECENT SECURITY ALERTS</p>
         </div>
 
-        <div class="portal-grid">
-            <a href="/live" class="portal-card">
-                <div>
-                    <h3>LIVE MONITOR <span>&rarr;</span></h3>
-                    <p>入退館ゲートおよびトレーニングルームのライブ映像・AI検知状態をリアルタイムで監視します。</p>
-                </div>
-                <div class="card-action">LAUNCH MONITOR &rarr;</div>
-            </a>
-
-            <a href="/admin/logs" class="portal-card">
-                <div>
-                    <h3>ACCESS LOGS <span>&rarr;</span></h3>
-                    <p>過去の入退館履歴やマシン占有状況、不正検知（アラート）のログを一覧・詳細確認します。</p>
-                </div>
-                <div class="card-action">VIEW LOGS &rarr;</div>
-            </a>
-
-            <a href="/admin/members" class="portal-card">
-                <div>
-                    <h3>MEMBER MANAGEMENT <span>&rarr;</span></h3>
-                    <p>登録会員のマスタ情報の確認、顔データ登録状況のチェック、およびアカウント削除を行います。</p>
-                </div>
-                <div class="card-action">MANAGE MEMBERS &rarr;</div>
-            </a>
+        <div class="alert-ticker-container">
+            <h3>⚠️ RECENT SECURITY & VIOLATION ALERTS</h3>
+            <table class="alert-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Type</th>
+                        <th>Member / Target</th>
+                        <th>Details / Note</th>
+                    </tr>
+                </thead>
+                <tbody id="alerts-table-body">
+                    <tr>
+                        <td colspan="4" style="color: var(--text-muted); text-align: center; padding: 20px;">LOADING ALERTS...</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -386,5 +379,40 @@
             </div>
         </div>
     </footer>
+
+    <script>
+        // ページ読み込み時に直近のアダートを取得して表示する
+        async function fetchRecentAlerts() {
+            try {
+                const response = await fetch('/api/admin/recent-alerts');
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    const tbody = document.getElementById('alerts-table-body');
+                    tbody.innerHTML = '';
+                    
+                    if (data.alerts.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="4" style="color: var(--text-muted); text-align: center; padding: 20px;">直近のアラートはありません。</td></tr>';
+                        return;
+                    }
+
+                    data.alerts.forEach(alert => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td style="color: var(--text-muted);">${alert.timestamp || '-'}</td>
+                            <td><span class="badge-alert">${alert.type.toUpperCase()}</span></td>
+                            <td style="font-weight: 700;">${alert.detail || '-'}</td>
+                            <td>${alert.message || '-'}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to fetch alerts:", e);
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', fetchRecentAlerts);
+    </script>
 </body>
 </html>

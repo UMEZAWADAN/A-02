@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>エステ予約 - Gym Security</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #fff; margin: 0; padding: 20px; }
+    .container { max-width: 500px; margin: 50px auto; background: #1e1e1e; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); border: 1px solid #333; }
+    nav { text-align: left; margin-bottom: 20px; }
+    nav a { color: #80deea; text-decoration: none; font-size: 0.9em; font-family: monospace; }
+    nav a:hover { text-decoration: underline; }
+    h2 { color: #f48fb1; text-align: center; margin-bottom: 25px; }
+    label { display: block; margin-top: 15px; color: #ccc; font-weight: bold; }
+    input, select, button { width: 100%; padding: 12px; margin-top: 8px; border-radius: 6px; border: 1px solid #444; background: #2a2a2a; color: #fff; box-sizing: border-box; font-size: 1em; }
+    button { background: #d81b60; color: #fff; font-weight: bold; border: none; margin-top: 25px; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #ad1457; }
+    #result-msg { margin-top: 20px; text-align: center; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <nav>
+      <a href="/portal">&larr; ポータルホームに戻る</a>
+    </nav>
+    <h2>📅 エステ（20分枠）予約</h2>
+    <form id="esthe-form">
+      <label for="member_id">会員ID (例: mem_xxxxxxxx):</label>
+      <input type="text" id="member_id" name="member_id" required placeholder="会員IDを入力してください">
+
+      <label for="start_time">希望日時 (20分刻み):</label>
+      <input type="datetime-local" id="start_time" name="start_time" required>
+
+      <button type="submit">予約を確定する</button>
+    </form>
+    <div id="result-msg"></div>
+  </div>
+
+  <script>
+    document.getElementById('esthe-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const memberId = document.getElementById('member_id').value.trim();
+      const rawTime = document.getElementById('start_time').value; // "YYYY-MM-DDTHH:mm"
+      const msgDiv = document.getElementById('result-msg');
+
+      if (!memberId || !rawTime) {
+        msgDiv.style.color = '#ff1744';
+        msgDiv.innerText = 'すべての項目を入力してください。';
+        return;
+      }
+
+      // MySQLの DATETIME 形式 ("YYYY-MM-DD HH:MM:SS") に変換
+      const formattedTime = rawTime.replace('T', ' ') + ':00';
+
+      try {
+        const response = await fetch('/api/esthe/reserve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ member_id: memberId, start_time: formattedTime })
+        });
+        const result = await response.json();
+
+        if (result.status === 'success') {
+          msgDiv.style.color = '#00e676';
+          msgDiv.innerText = '✨ ' + result.message;
+          document.getElementById('esthe-form').reset();
+        } else {
+          msgDiv.style.color = '#ff1744';
+          msgDiv.innerText = '❌ ' + result.message;
+        }
+      } catch (err) {
+        msgDiv.style.color = '#ff1744';
+        msgDiv.innerText = '❌ 通信エラーが発生しました。';
+      }
+    });
+  </script>
+</body>
+</html>
