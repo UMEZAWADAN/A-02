@@ -1723,11 +1723,11 @@ def camera_processing_loop():
                             if member:
                                 m_id = member["member_id"]
                                 m_name = member["name"]
-                                # 予約時間の前後15分以内で、まだ始まっていない予約を「利用中(in_progress)」にする
-                                res = _exec(conn, """
-                                    SELECT id FROM esthe_reservations 
-                                    WHERE member_id = %s AND status = 'reserved' 
-                                      AND start_time <= DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+                                # 開始の少し前（ESTHE_EARLY_ENTRY_SECONDS）から終了までの予約を「利用中(in_progress)」にする
+                                res = _exec(conn, f"""
+                                    SELECT id FROM esthe_reservations
+                                    WHERE member_id = %s AND status = 'reserved'
+                                      AND start_time <= DATE_ADD(NOW(), INTERVAL {int(ESTHE_EARLY_ENTRY_SECONDS)} SECOND)
                                       AND end_time >= NOW()
                                     LIMIT 1
                                 """, (m_id,)).fetchone()
@@ -1746,12 +1746,15 @@ def camera_processing_loop():
                 if 'last_esthe_check' not in locals():
                     last_esthe_check = 0.0
                 
-                if current_time - last_esthe_check > 10.0:
+                if current_time - last_esthe_check > ESTHE_CHECK_INTERVAL:
                     last_esthe_check = current_time
                     try:
                         conn = get_conn(dict_cursor=True)
+                        # 無断キャンセル（予約したのに来ていない）も、スコア画面を開かなくてもここで検知する
+                        mark_esthe_noshows(conn)
+
                         overdue_res = _exec(conn, """
-                            SELECT r.id, r.member_id, r.start_time, r.end_time, m.name 
+                            SELECT r.id, r.member_id, r.start_time, r.end_time, m.name
                             FROM esthe_reservations r
                             JOIN members m ON r.member_id = m.member_id
                             WHERE r.status = 'in_progress' AND r.end_time < NOW()
@@ -1781,13 +1784,13 @@ def camera_processing_loop():
                     for box in esthe_yolo_res.boxes.xyxy.cpu().numpy():
                         cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 0, 255), 2)
                 else:
-                    # 人が誰もいない状態が「15秒間」続いたら、利用中(in_progress)の予約を自動完了にする
-                    if current_time - esthe_last_person_time > 15.0:
+                    # 人が誰もいない状態が一定秒数続いたら、利用中(in_progress)と超過(overtime)の予約を自動完了にする
+                    if current_time - esthe_last_person_time > ESTHE_EMPTY_COMPLETE_SECONDS:
                         try:
                             conn = get_conn(dict_cursor=True)
                             in_progress_res = _exec(conn, """
-                                SELECT id, member_id FROM esthe_reservations 
-                                WHERE status = 'in_progress'
+                                SELECT id, member_id FROM esthe_reservations
+                                WHERE status IN ('in_progress', 'overtime')
                             """).fetchall()
                             
                             for r in in_progress_res:
@@ -1873,10 +1876,33 @@ class EstheReserveRequest(BaseModel):
 class EstheCancelRequest(BaseModel):
     reservation_id: int
 
-ESTHE_SLOT_MINUTES = 20   # 予約1枠の長さ（開始時刻もこの刻みに揃える）
+ESTHE_SLOT_SECONDS = 20            # 予約1枠の長さ（秒）。開始時刻もこの刻み（秒が 00・20・40）に揃える
+ESTHE_EARLY_ENTRY_SECONDS = 20     # 開始のこの秒数前から入室できる
+ESTHE_CHECK_INTERVAL = 3.0         # 時間超過・無断キャンセルをチェックする間隔（秒）
+ESTHE_EMPTY_COMPLETE_SECONDS = 15.0   # 無人がこの秒数続いたら自動で完了にする
+
+def mark_esthe_noshows(conn, member_id=None):
+    """予約したのに入室しないまま、枠の終了時刻を過ぎた予約を no_show にして、メールを送る。member_id を渡すとその会員だけが対象。"""
+    where = "status = 'reserved' AND end_time < NOW()"
+    params = ()
+    if member_id is not None:
+        where += " AND member_id = %s"
+        params = (member_id,)
+    cur = conn.cursor(pymysql.cursors.Cursor)
+    cur.execute(f"SELECT id, member_id, start_time FROM esthe_reservations WHERE {where}", params)
+    targets = cur.fetchall()
+    for rid, mid, start in targets:
+        # 他の処理が先に更新していたら（rowcount が 0）、メールを重ねて送らない
+        cur.execute("UPDATE esthe_reservations SET status = 'no_show' WHERE id = %s AND status = 'reserved'", (rid,))
+        if cur.rowcount:
+            print(f"🚨 【エステ無断キャンセル検知】 会員ID {mid} / 予約開始 {start}")
+            notify_esthe_noshow_async(mid, str(start))
+    conn.commit()
 
 def _login_required_json():
     return JSONResponse({"status": "error", "message": "ログインが必要です。ポータルからログインしてください。"}, status_code=401)
+
+ESTHE_TIME_FMT = "%H:%M:%S"   # 枠が秒単位なので、画面に出す時刻も秒まで出す
 
 # 📝 エステ予約登録API（会員ログイン必須）
 @app.post("/api/esthe/reserve")
@@ -1890,11 +1916,12 @@ def api_reserve_esthe(request: Request, data: EstheReserveRequest):
             start_dt = datetime.strptime(data.start_time, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             return {"status": "error", "message": "日時の形式が正しくありません。"}
-        if start_dt.minute % ESTHE_SLOT_MINUTES != 0 or start_dt.second != 0:
-            return {"status": "error", "message": f"{ESTHE_SLOT_MINUTES}分刻みの時刻（00・20・40分）を選んでください。"}
+        # 開始時刻は枠の刻みに揃える（秒が 00・20・40）
+        if start_dt.second % ESTHE_SLOT_SECONDS != 0:
+            return {"status": "error", "message": f"{ESTHE_SLOT_SECONDS}秒刻みの時刻（秒が00・20・40）を選んでください。"}
         if start_dt <= datetime.now():
             return {"status": "error", "message": "過去の日時は予約できません。"}
-        end_dt = start_dt + timedelta(minutes=ESTHE_SLOT_MINUTES)
+        end_dt = start_dt + timedelta(seconds=ESTHE_SLOT_SECONDS)
 
         conn = get_conn(dict_cursor=True)
         try:
@@ -1903,10 +1930,11 @@ def api_reserve_esthe(request: Request, data: EstheReserveRequest):
                 request.session.pop("member_id", None)
                 return _login_required_json()
 
-            # 既に埋まっていないか（予約済み・利用中の枠は取れない）
+            # 既に埋まっていないか（時間帯が重なる、予約済み・利用中の枠は取れない）
             if _exec(conn,
-                     "SELECT id FROM esthe_reservations WHERE start_time = %s AND status IN ('reserved', 'in_progress')",
-                     (start_dt,)).fetchone():
+                     "SELECT id FROM esthe_reservations WHERE start_time < %s AND end_time > %s "
+                     "AND status IN ('reserved', 'in_progress')",
+                     (end_dt, start_dt)).fetchone():
                 return {"status": "error", "message": "この時間帯は既に予約されています。"}
 
             # 会員の予約はその場で確定させる（直後の一覧表示に反映されるよう、書き込みキューを使わず直接 INSERT する）
@@ -1916,7 +1944,7 @@ def api_reserve_esthe(request: Request, data: EstheReserveRequest):
             conn.commit()
         finally:
             conn.close()
-        return {"status": "success", "message": f"{start_dt.strftime('%m/%d %H:%M')} のエステを予約しました。"}
+        return {"status": "success", "message": f"{start_dt.strftime('%m/%d ' + ESTHE_TIME_FMT)} のエステを予約しました。"}
     except Exception as e:
         print(f"⚠️ エステ予約エラー: {e}")
         return {"status": "error", "message": "予約に失敗しました。時間をおいてもう一度お試しください。"}
@@ -1937,8 +1965,8 @@ def api_my_esthe_reservations(request: Request):
     now = datetime.now()
     reservations = [{
         "id": r["id"],
-        "start_time": r["start_time"].strftime("%Y-%m-%d %H:%M"),
-        "end_time": r["end_time"].strftime("%H:%M"),
+        "start_time": r["start_time"].strftime("%Y-%m-%d " + ESTHE_TIME_FMT),
+        "end_time": r["end_time"].strftime(ESTHE_TIME_FMT),
         "status": r["status"],
         # 予約済みで、まだ始まっていないものだけキャンセルできる
         "cancellable": r["status"] == "reserved" and r["start_time"] > now,
@@ -2167,26 +2195,8 @@ def calculate_member_score(conn, member_id):
         if limit > 0 and (duration or 0) > limit:
             overtime_count += 1
     
-    # 無断キャンセルになる対象をあらかじめ取得してメールを送りつつステータス更新
-    cursor.execute("""
-        SELECT id, start_time FROM esthe_reservations 
-        WHERE member_id = %s AND status = 'reserved' AND end_time < NOW()
-    """, (member_id,))
-    noshow_targets = cursor.fetchall()
-
-    if noshow_targets:
-        cursor.execute("""
-            UPDATE esthe_reservations 
-            SET status = 'no_show' 
-            WHERE member_id = %s AND status = 'reserved' AND end_time < NOW()
-        """, (member_id,))
-        conn.commit()
-        
-        # 📝 追加入力：該当する無断キャンセルそれぞれにメールを非同期送信
-        for ns in noshow_targets:
-            ns_id = ns[0] if isinstance(ns, tuple) else ns['id']
-            ns_start = ns[1] if isinstance(ns, tuple) else ns['start_time']
-            notify_esthe_noshow_async(member_id, str(ns_start))
+    # 無断キャンセルの判定（共通ヘルパー。カメラ処理側の10秒おきのチェックでも同じ処理が走る）
+    mark_esthe_noshows(conn, member_id)
 
     # エステ無断キャンセル回数
     cursor.execute(

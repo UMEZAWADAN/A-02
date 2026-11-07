@@ -167,7 +167,8 @@
       letter-spacing: 0.05em;
     }
 
-    .form-group input {
+    .form-group input,
+    .form-group select {
       font-family: var(--font-en);
       width: 100%;
       padding: 12px;
@@ -181,7 +182,8 @@
       transition: border-color 0.2s;
     }
 
-    .form-group input:focus {
+    .form-group input:focus,
+    .form-group select:focus {
       border-color: var(--accent-warm);
     }
 
@@ -328,7 +330,7 @@
     <div class="portal-header">
       <div class="portal-title">
         <h1>ESTHE <span>RESERVATION</span></h1>
-        <p class="jp-text" style="color: var(--text-muted); margin: 0; letter-spacing: 0.05em;">セルフエステ（20分枠）のご予約</p>
+        <p class="jp-text" style="color: var(--text-muted); margin: 0; letter-spacing: 0.05em;">セルフエステ（20秒枠）のご予約</p>
       </div>
     </div>
 
@@ -338,8 +340,8 @@
         <h2>NEW RESERVATION</h2>
         <form id="esthe-form">
           <div class="form-group">
-            <label for="start_time" class="jp-text">希望日時 (20分刻み)</label>
-            <input type="datetime-local" id="start_time" name="start_time" step="1200" required>
+            <label for="start_slot" class="jp-text">開始時刻 (20秒枠)</label>
+            <select id="start_slot" name="start_slot" required></select>
           </div>
           <button type="submit" class="btn">予約を確定する</button>
         </form>
@@ -373,6 +375,36 @@
     };
 
     const msgDiv = document.getElementById('result-msg');
+    const slotSelect = document.getElementById('start_slot');
+    const SLOT_SECONDS = 20;   // 予約1枠の長さ（秒）。main.py の ESTHE_SLOT_SECONDS と合わせる
+    const SLOT_COUNT = 30;     // 今から何枠ぶん先まで並べるか（30枠 = 10分先まで）
+
+    function pad2(n) { return String(n).padStart(2, '0'); }
+
+    function fullStr(d) {
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' '
+           + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    }
+
+    // 今から15秒以上先の「次の20秒区切り」から、SLOT_COUNT 枠を並べる。値は日時の文字列そのもの。
+    function buildSlots() {
+      const prev = slotSelect.value;
+      const step = SLOT_SECONDS * 1000;
+      let t = Math.ceil((Date.now() + 15000) / step) * step;
+      slotSelect.innerHTML = '';
+      for (let i = 0; i < SLOT_COUNT; i++, t += step) {
+        const d = new Date(t);
+        const opt = document.createElement('option');
+        opt.value = fullStr(d);
+        opt.textContent = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+        slotSelect.appendChild(opt);
+      }
+      const keep = Array.from(slotSelect.options).find(o => o.value === prev);
+      if (keep) keep.selected = true;
+    }
+
+    // 時間がすぐ過ぎるので、操作していないあいだは候補を更新する
+    setInterval(() => { if (document.activeElement !== slotSelect) buildSlots(); }, 5000);
 
     function showMsg(ok, text) {
       msgDiv.style.color = ok ? '#c86d4b' : '#b55232';
@@ -461,14 +493,12 @@
 
     document.getElementById('esthe-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const rawTime = document.getElementById('start_time').value;
+      const formattedTime = slotSelect.value;   // 選択肢の値がそのまま日時（YYYY-MM-DD HH:MM:SS）
 
-      if (!rawTime) {
-        showMsg(false, '希望日時を入力してください。');
+      if (!formattedTime) {
+        showMsg(false, '開始時刻を選んでください。');
         return;
       }
-
-      const formattedTime = rawTime.replace('T', ' ') + ':00';
 
       try {
         const response = await fetch('/api/esthe/reserve', {
@@ -481,7 +511,7 @@
 
         showMsg(result.status === 'success', result.message);
         if (result.status === 'success') {
-          document.getElementById('esthe-form').reset();
+          buildSlots();
         }
       } catch (err) {
         showMsg(false, '通信エラーが発生しました。');
@@ -489,7 +519,10 @@
       loadReservations();
     });
 
-    window.addEventListener('DOMContentLoaded', loadReservations);
+    window.addEventListener('DOMContentLoaded', () => {
+      buildSlots();
+      loadReservations();
+    });
   </script>
 </body>
 </html>
