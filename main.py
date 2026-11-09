@@ -1823,10 +1823,92 @@ def camera_processing_loop():
                             conn.close()
                         except Exception as e:
                             print(f"⚠️ エステ自動完了処理エラー: {e}")
+            
             else:
-                # ＝ トレーニングルームモード ＝
-                # （ルームモードの処理はそのまま維持）
-                pass
+                # ＝ トレーニングルームモード（椅子検知・座り判定・マシン利用時間計測） ＝
+                put_text(frame, "MODE: [ROOM (Seat & Machine Monitor)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+
+                # 1. 人と椅子の検出（YOLO）
+                room_results = room_model(frame, classes=[0] + SEAT_CLASSES, imgsz=YOLO_IMGSZ, conf=ROOM_CONF, verbose=False)[0]
+                
+                person_boxes = []
+                seat_boxes = []
+                for box_data in room_results.boxes.data.cpu().numpy():
+                    x1, y1, x2, y2, conf, cls_id = box_data
+                    box = [int(x1), int(y1), int(x2), int(y2)]
+                    if int(cls_id) == 0:
+                        person_boxes.append(box)
+                    elif int(cls_id) in SEAT_CLASSES:
+                        seat_boxes.append(box)
+                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), (255, 140, 0), THICK)
+
+                # 椅子の位置をメモリで保持（影やオクルージョン対策）
+                active_seats = update_seat_memory(seat_memory, seat_boxes, person_boxes, current_time)
+
+                # 2. 骨格推定（姿勢・座り判定用）
+                pose_res = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
+
+                # 3. 各マシンの状態を初期化
+                for m_key in MACHINE_LIMITS.keys():
+                    st = state.machine_states[m_key]
+                    st["live_user"] = "-"
+                    st["live_member_id"] = None
+
+                # 4. 人ごとの判定と紐付け
+                for p_box in person_boxes:
+                    cv2.rectangle(frame, (p_box[0], p_box[1]), (p_box[2], p_box[3]), (0, 255, 0), THICK)
+
+                    # 骨格データの取得
+                    kxy, kconf = find_pose_for_box(pose_res, p_box)
+
+                    # 座っているかの評価
+                    is_sitting, overlap, reason = evaluate_sitting(p_box, kxy, kconf, active_seats)
+
+                    # 本人の特定（顔認識または服装補助）
+                    faces = face_app.get(frame)
+                    recognized_name, recognized_id = "Guest", None
+                    
+                    for face in faces:
+                        fcx = (face.bbox[0] + face.bbox[2]) / 2
+                        fcy = (face.bbox[1] + face.bbox[3]) / 2
+                        if p_box[0] <= fcx <= p_box[2] and p_box[1] <= fcy <= p_box[3]:
+                            member_ids, member_names, member_matrix = member_cache.get()
+                            ident = identify_face_1n(face.embedding, member_ids, member_names, member_matrix)
+                            if ident is not None and ident[2] > ROOM_FACE_THRESHOLD:
+                                recognized_id, recognized_name, _ = ident
+                                break
+
+                    # 顔で見つからない場合は服装による補助推定
+                    estimated_by_clothes = False
+                    if recognized_name == "Guest" and CLOTHES_FALLBACK_ENABLED:
+                        r_name, r_id = state.match_recent_entry_by_feature(kxy, kconf, frame, current_time)
+                        if r_name is not None:
+                            recognized_name, recognized_id = r_name, r_id
+                            estimated_by_clothes = True
+
+                    # アイデンティティの保持クラスを通す
+                    name, member_id, holding, est_flag = identity_holder.update(recognized_name, recognized_id, is_sitting, current_time, estimated=estimated_by_clothes)
+
+                    # 状態の表示とマシンへの割り当て
+                    status_str = f"{name}"
+                    if is_sitting:
+                        confirmed, since_t = sit_confirmer.update(True, current_time)
+                        if confirmed:
+                            status_str += " (Sitting)"
+                            # どのマシン付近に座っているか判定して紐付け
+                            for m_key in MACHINE_LIMITS.keys():
+                                state.update_machine_occupancy(m_key, name, current_time, started_at=since_t, member_id=member_id)
+                        else:
+                            status_str += " (Confirming...)"
+                    else:
+                        sit_confirmer.update(False, current_time)
+                        status_str += " (Standing)"
+
+                    color = (0, 255, 0) if is_sitting else (0, 165, 255)
+                    put_text(frame, status_str, (p_box[0], max(15, p_box[1] - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, hud=False)
+
+                # アイドル状態のマシン（誰も使っていない状態が続いたもの）を解放する
+                state.release_idle_machines(current_time)
 
             with render_lock:
                 current_output_frame = frame.copy()
@@ -1885,10 +1967,13 @@ def get_register_page(request: Request):
     # 一度アクセスしたら通行証を消す
     request.session.pop("allow_register", None)
 
-    # 🛑 【追加】レジスター画面を開いたときは、バックエンドのカメラを解放するモードにする
+    # 🛑 レジスター画面を開いたときは、確実にカメラモードを "register" にして解放を促す
     with mode_lock:
         global active_mode
         active_mode = "register"
+
+    # 💡 万が一キャプチャが開きっぱなしなら、ここで強制的に解放をかける
+    # （カメラ処理ループ側の `active_mode == "register"` の判定とも連動します）
 
     return templates.TemplateResponse(request, "register.html", {})
 
@@ -2119,11 +2204,6 @@ def api_register(data: RegisterRequest):
 def get_esthe_page(request: Request):
     if not request.session.get("member_id"):
         return RedirectResponse(url="/portal", status_code=303)
-
-    # 🌐 ページアクセス時にモードを自動切り替え
-    with mode_lock:
-        global active_mode
-        active_mode = "esthe"
 
     return templates.TemplateResponse(request, "esthe.html", {})
 
@@ -2562,11 +2642,6 @@ def _fmt_seconds(sec):
 async def read_live(request: Request):
     if "admin_user" not in request.session:
         return RedirectResponse(url="/admin/login", status_code=303)
-        
-    # 🌐 ページアクセス時にモードを自動切り替え
-    with mode_lock:
-        global active_mode
-        active_mode = "room"
         
     return templates.TemplateResponse(request, "live.html", {})
 
