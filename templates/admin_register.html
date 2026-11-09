@@ -331,6 +331,9 @@
             <div class="input-group">
                 <label for="password">Password</label>
                 <input type="password" id="password" placeholder="••••••••" required>
+                <p style="font-size: 0.7rem; color: var(--text-muted); font-family: monospace; margin: 6px 0 0 0;">
+                    // MIN 8 CHARS: UPPER + lower + 0-9 + SYMBOL
+                </p>
             </div>
 
             <button type="button" class="cyber-btn" onclick="handleRegister()">REGISTER ADMIN</button>
@@ -367,6 +370,16 @@
     </footer>
 
     <script>
+        function validatePassword(pw) {
+            if (!/^[!-~]*$/.test(pw)) return "HALF-WIDTH ALPHANUMERIC AND SYMBOLS ONLY (NO SPACES).";
+            if (pw.length < 8) return "PASSWORD MUST BE AT LEAST 8 CHARACTERS.";
+            if (!/[a-z]/.test(pw)) return "PASSWORD NEEDS A LOWERCASE LETTER.";
+            if (!/[A-Z]/.test(pw)) return "PASSWORD NEEDS AN UPPERCASE LETTER.";
+            if (!/[0-9]/.test(pw)) return "PASSWORD NEEDS A DIGIT.";
+            if (!/[!-\/:-@\[-`{-~]/.test(pw)) return "PASSWORD NEEDS A SPECIAL CHARACTER (HALF-WIDTH).";
+            return null;
+        }
+
         function handleRegister() {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
@@ -375,6 +388,13 @@
             if (!username || !password) {
                 message.style.color = "var(--danger-color)";
                 message.innerText = "ERROR: ID AND PASSWORD REQUIRED.";
+                return;
+            }
+
+            const pwError = validatePassword(password);
+            if (pwError) {
+                message.style.color = "var(--danger-color)";
+                message.innerText = "ERROR: " + pwError;
                 return;
             }
 

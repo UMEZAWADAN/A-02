@@ -43,6 +43,29 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """入力されたパスワードが、ハッシュ値と一致するか検証する"""
     return pwd_context.verify(plain_password, hashed_password)
 
+PASSWORD_MIN_LENGTH = 8
+
+def validate_password_strength(password: str):
+    """パスワード強度を検証する。問題なければ None、問題があればエラーメッセージを返す。
+    条件：8文字以上／英大文字／英小文字／数字／特殊文字を含む"""
+    # 全角文字・空白・制御文字は不可（半角の英数字と記号 ! 〜 ~ のみ）
+    if not re.fullmatch(r"[!-~]*", password):
+        return "パスワードは半角の英数字・記号のみで入力してください(全角文字・空白は使えません)。"
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return f"パスワードは{PASSWORD_MIN_LENGTH}文字以上で入力してください。"
+    if not re.search(r"[a-z]", password):
+        return "パスワードには英小文字を含めてください。"
+    if not re.search(r"[A-Z]", password):
+        return "パスワードには英大文字を含めてください。"
+    if not re.search(r"[0-9]", password):
+        return "パスワードには数字を含めてください。"
+    if not re.search(r"[!-/:-@\[-`{-~]", password):
+        return "パスワードには半角の特殊文字(!@#$% など)を含めてください。"
+    # bcrypt は72バイトまでしか扱えないので、上限も設ける
+    if len(password.encode("utf-8")) > 72:
+        return "パスワードが長すぎます(72バイト以内にしてください)。"
+    return None
+
 
 
 # テンプレートエンジンの準備
@@ -2021,11 +2044,15 @@ def api_register(data: RegisterRequest):
     # 🔍 実際に届いている中身を確認するデバッグ出力
     print(f"👉 受信した名前: {data.name}")
     print(f"👉 受信したメール: {data.email}")
-    print(f"👉 受信したパスワードの文字数: {len(data.password)} / 内容: {data.password}")
     try:
         email = unicodedata.normalize("NFKC", data.email).strip()
         if not email.isascii() or "@" not in email:
             return {"status": "error", "message": "メールアドレスは半角英数字で入力してください。"}
+
+        # 🔒 パスワード強度チェック（8文字以上・大文字・小文字・数字・特殊文字）
+        pw_error = validate_password_strength(data.password)
+        if pw_error:
+            return {"status": "error", "message": pw_error}
 
         # 🔒 【追加】パスワードのハッシュ化
         hashed_password = get_password_hash(data.password)
@@ -2675,6 +2702,11 @@ def get_admin_register_page(request: Request):
 @app.post("/api/admin/register")
 def api_admin_register(data: AdminAuthRequest):
     try:
+        # 🔒 パスワード強度チェック（8文字以上・大文字・小文字・数字・特殊文字）
+        pw_error = validate_password_strength(data.password)
+        if pw_error:
+            return {"status": "error", "message": pw_error}
+
         hashed_password = get_password_hash(data.password) # 🔒 ハッシュ化
         conn = get_conn()
         cursor = conn.cursor()
