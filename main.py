@@ -1,3 +1,5 @@
+# 標準ライブラリと外部ライブラリの読み込み。
+# cv2=カメラ映像とQR、numpy=顔特徴量の計算、pymysql=MySQL、fastapi=Webサーバー本体。
 import asyncio
 import base64
 import cv2
@@ -26,13 +28,16 @@ from fastapi import Request
 from pydantic import BaseModel
 import uvicorn
 from starlette.middleware.sessions import SessionMiddleware
-from fastapi.staticfiles import StaticFiles  # 👈 ① この行を追加する
+from fastapi.staticfiles import StaticFiles
 
+# .env ファイルの中身（DBのパスワードやメールの設定など）を環境変数として読み込む。
 from dotenv import load_dotenv
 load_dotenv()
 
-# 🔒 パスワードハッシュ化の設定
+# パスワードハッシュ化の設定
 from passlib.context import CryptContext
+# パスワードは平文のまま保存せず、bcrypt でハッシュ化して保存する。
+# deprecated="auto" は、古い方式のハッシュが混ざっていても検証できるようにする指定。
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def get_password_hash(password: str) -> str:
@@ -43,6 +48,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """入力されたパスワードが、ハッシュ値と一致するか検証する"""
     return pwd_context.verify(plain_password, hashed_password)
 
+# パスワードの最低文字数。validate_password_strength で使う。
 PASSWORD_MIN_LENGTH = 8
 
 def validate_password_strength(password: str):
@@ -69,20 +75,24 @@ def validate_password_strength(password: str):
 
 
 # テンプレートエンジンの準備
+# FastAPI本体と、HTMLテンプレート(templates フォルダ)・静的ファイル(static フォルダ)の設定。
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# 注意: ここで読み込んだ SECRET_KEY は使われておらず、下の add_middleware には固定の文字列が直接渡されている。
+# 本番で使うなら secret_key=SECRET_KEY に差し替えること（固定のままだとCookieの署名が誰でも作れてしまう）。
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key")
+# ログイン状態をCookieに保存するための設定。管理者は session["admin_user"]、会員は session["member_id"] で区別する。
 app.add_middleware(SessionMiddleware, secret_key="your-secret-key-here")
 
-# グローバル変数として追加
+# 以下の2つは現在どこからも使われていない（以前の実装の名残）。消しても動作は変わらない。
 clients = []
 last_detected_qr = "" # 直近のQRコードを保持する変数
 
 # =========================================================================
-# ⚙️ システム設定値（調整可能）
+# システム設定値（調整可能）
 # =========================================================================
 # MySQL 接続設定（環境変数で上書きできる。パスワードはコードに直接書かないこと）
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
@@ -105,25 +115,28 @@ def _exec(conn, sql, params=()):
     cur = conn.cursor()
     cur.execute(sql, params)
     return cur
+# 同じQRを読み続けているとき、この秒数以内の再読み取りは「同じ提示の続き」とみなして、もう一度認証し直さない。
 DUPLICATE_QR_WINDOW = 5.0
 STREAM_JPEG_QUALITY = 80        # ライブ映像のJPEG品質（既定の95より少し軽くする）
+# QR認証が有効な秒数。この間に線を越えた別の人は「共連れ」の疑いになる。認証セッションの寿命でもある。
 CO_TRAILING_WINDOW = 10.0
+# 以前使っていた共通の利用時間上限。今はマシンごとの MACHINE_LIMITS を使うので、この値は参照されていない。
 LIMIT_SECONDS = 10.0
 FACE_TIMEOUT = 10.0            # 顔の類似度（直近の最大値）を有効とみなす秒数
 FACE_MATCH_THRESHOLD = 0.60   # 顔が一致したとみなすコサイン類似度（入口の1:1判定。ログを見て調整）
 ROOM_FACE_THRESHOLD = 0.60    # ルームモードの1:N判定用。部屋のカメラは遠い・斜めで類似度が低めになりやすいので、画面の best= を見て下げる
 
-# 📧 メール送信設定（環境変数から安全に読み込む）
+# メール送信設定（環境変数から安全に読み込む）
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "chocozap123456@gmail.com")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")   # 🔒 コード内からパスワードを排除
 
-# 🚨 違反メール：マシンの利用時間が上限を超えた会員に、利用の終了時にメールで違反内容を知らせる
+# 違反メール：マシンの利用時間が上限を超えた会員に、利用の終了時にメールで違反内容を知らせる
 VIOLATION_MAIL_ENABLED = True       # False にするとメールを送らない
 VIOLATION_MAIL_COOLDOWN = 600.0     # 同じ会員には、この秒数のあいだ違反メールを重ねて送らない（識別の揺れで続けて送られるのを防ぐ）
 
-# 🎞️ 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
+# 映像の解像度（カメラ取得・YOLO・顔検出・ライブ表示すべてこのサイズで処理する）
 FRAME_W, FRAME_H = 640, 480    # 元の解像度。高精度にしたいときは 1280, 720 などに上げる（その分CPU負荷が大きく増える）
 LINE_X = FRAME_W // 2          # 入口の通過判定ライン（画面中央）
 YOLO_IMGSZ = 640               # YOLOの推論サイズ（ultralyticsの既定値）。FRAME_W を上げたら合わせて上げる
@@ -132,7 +145,7 @@ UI = FRAME_W / 640.0           # 画面上の文字・線の拡大率（HUDの�
 THICK = max(1, int(round(2 * UI * 0.75)))   # ボックス・ラインの太さ
 CAMERA_ID = 0  # 内蔵カメラ1台
 
-# 🪑 椅子・座り判定の設定
+# 椅子・座り判定の設定
 SEAT_CLASSES = [56]           # COCO: 56=chair（普通の椅子のみ。ベンチ等も拾いたい場合は 13=bench, 57=couch を追加）
 ROOM_MODEL_PATH = "yolo11n.pt"  # 椅子の検出が不安定なら "yolo11s.pt" や "yolo11m.pt" に変更（精度↑・速度↓）
 ROOM_PUSH_INTERVAL = 0.5      # ルームモードで画面へ状態を送る最小間隔（秒）。毎フレーム送るのをやめて負荷を下げる
@@ -152,7 +165,7 @@ HIP_SEAT_MIN_DEPTH_NOKNEE = 0.20   # 膝が見えないとき、腰は椅子ボ�
 SHOULDER_ABOVE_SEAT_MAX = 0.40     # 腰が見えない（上半身のみ）とき、肩が椅子ボックスの上端より（椅子の高さ×この割合）以上高ければ立っているとみなす。座ると約0.15、立つと約0.55
 STANDING_ASPECT_RATIO = 3.0   # 骨格が取れないときの予備：人ボックスの縦÷横がこれ以上なら立っているとみなす
 
-# 🚪 入口：「顔認証」と「線の通過」を分けて判定する設定
+# 入口：「顔認証」と「線の通過」を分けて判定する設定
 ENTRANCE_CROSS_MARGIN_PX = round(FRAME_W * 0.03)      # 認証済みの本人が、線からこの距離だけ向こう側（右）で見つかったら通過（入館）とする（幅の3%）
 ENTRANCE_REASSOC_SECONDS = 3.0       # 本人を見失っても、この秒数以内なら直前の位置に近い枠を本人として探し直す
 ENTRANCE_REASSOC_BASE_PX = round(FRAME_W * 0.12)      # 探し直しで許容する移動距離（基本。幅の12%）
@@ -166,10 +179,10 @@ TRACK_LINK_BASE_PX = round(FRAME_W * 0.12)            # 引き継ぎで許容す
 TRACK_LINK_PX_PER_SEC = round(FRAME_W * 0.20)         # 引き継ぎで許容する移動距離（見失った秒数あたりの追加。幅の20%）
 TRACK_HISTORY_TTL = 30.0             # 追跡IDごとの履歴をこの秒数だけ残す（それより古いものは捨てる）
 
-# 🚪 退館：QRは使わず、顔だけで誰が出たかを識別する（全会員との1:N照合）
+# 退館：QRは使わず、顔だけで誰が出たかを識別する（全会員との1:N照合）
 EXIT_FACE_THRESHOLD = 0.40    # 退館時の顔識別のしきい値。別人に誤認されるなら上げる、識別できないなら下げる（画面の会員ID＋類似度を見て調整）
 
-# 👕 顔が見えないときの服装による補助推定（ルームモード）
+# 顔が見えないときの服装による補助推定（ルームモード）
 CLOTHES_FALLBACK_ENABLED = True   # False にすると服装による推定を完全に無効化（顔だけで識別）
 CLOTHES_MAX_DIST = 20.0           # 服装の色の差（Lab空間の距離。上半身・下半身の大きいほう）がこれ以上なら別人扱い。小さいほど厳しい
 CLOTHES_MIN_MARGIN = 8.0          # 候補が複数いるとき、1位と2位の差がこれ未満なら決めない（曖昧なので Guest のまま）
@@ -185,41 +198,49 @@ def put_text(img, text, org, font, fs, color, th=2, hud=True):
     cv2.putText(img, text, (x, y), font, fs * UI, color, max(1, int(round(th * UI))))
     
 
+# カメラを開いて、解像度を FRAME_W x FRAME_H で要求する。
+# カメラによっては指定どおりにならないので、読み出す側でも resize している。
 def open_camera():
     cap = cv2.VideoCapture(CAMERA_ID)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
     return cap
 
-# 🎛️ カメラの役割切り替え用フラグ ('entrance' または 'room')
+# カメラの役割（モード）。'entrance'=入口 / 'room'=トレーニングルーム / 'esthe'=エステ室 / 'register'=会員登録中（カメラを手放す）。
+# カメラ処理スレッドとWebの処理の両方から書き換えるので、読み書きは mode_lock を取ってから行う。
 active_mode = "entrance"
 mode_lock = threading.Lock()
 
-# 🏋️‍♂️ マシン・椅子の管理情報
+# マシン・椅子の管理情報
+# マシンごとの表示名と、利用時間の上限（秒）。上限を超えて座り続けると「超過」になり、違反メールが送られる。
+# 単位は秒。実際のジムで使うなら、もっと長い時間に直すこと。
 MACHINE_LIMITS = {
     "bench_press": {"name": "ベンチプレス", "limit": 15.0},
     "squat_rack": {"name": "スクワットラック", "limit": 20.0}
 }
 
 # =========================================================================
-# 💾 リクエスト用データモデル（先頭側に定義）
+# リクエスト用データモデル（先頭側に定義）
 # =========================================================================
+# 会員登録API(/api/register)が受け取るJSON。image は撮影した顔写真で、base64の data URL 形式。
 class RegisterRequest(BaseModel):
     name: str
     email: str
-    password: str  # 👈 追加
+    password: str
     image: str
 
+# 管理者ログインAPIが受け取るJSON。
 class AdminAuthRequest(BaseModel):
     username: str
     password: str
 
+# 会員ログインAPIが受け取るJSON。
 class MemberLoginRequest(BaseModel):
     email: str
-    password: str  # 👈 追加
+    password: str
 
 # =========================================================================
-# 💾 データベース自動初期化
+# データベース自動初期化
 # =========================================================================
 def _ensure_database():
     """データベース自体が無ければ作る（CREATE 権限が無い場合は何もしない）。"""
@@ -236,6 +257,7 @@ def _ensure_database():
     except Exception as e:
         print(f"⚠️ データベースの自動作成をスキップ: {e}")
 
+# テーブルに列が無ければ追加する。古い版で作ったDBを、作り直さずに今の形へ移行するために使う。
 def _ensure_column(cursor, table, column, ddl):
     cursor.execute(
         "SELECT COUNT(*) FROM information_schema.COLUMNS "
@@ -244,6 +266,8 @@ def _ensure_column(cursor, table, column, ddl):
     if cursor.fetchone()[0] == 0:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
+# 起動時に呼ばれて、必要なテーブルをすべて作る（すでにあれば何もしない）。
+# members=会員、admins=管理者、passing_logs=入退館ログ、occupancy_logs=マシン利用ログ、esthe_reservations=エステ予約。
 def init_database():
     _ensure_database()
     conn = get_conn()
@@ -251,6 +275,8 @@ def init_database():
     # ID・トークン・パスワードは大文字小文字を区別して比較したいので utf8mb4_bin にする
     BIN = "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
 
+    # 管理者テーブル。パスワードはハッシュ値で入る。
+    # 管理者の新規登録画面は廃止したので、管理者を追加するときはDBへ直接入れる（パスワードは get_password_hash で作ったハッシュにすること）。
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS admins (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -259,19 +285,21 @@ def init_database():
         ) DEFAULT CHARSET=utf8mb4
     """)
 
-    # 変更後（password カラムを追加）
+    # 会員テーブル。qr_token は入館用QRに埋め込む文字列、face_embedding は顔写真から作った特徴量（バイト列）。
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS members (
             member_id VARCHAR(32) {BIN} PRIMARY KEY,
             name VARCHAR(100) NOT NULL,
             email VARCHAR(255) NOT NULL,
-            password VARCHAR(255) {BIN} NOT NULL, -- 👈 追加
+            password VARCHAR(255) {BIN} NOT NULL,
             qr_token VARCHAR(128) {BIN} UNIQUE NOT NULL,
             face_embedding BLOB
         ) DEFAULT CHARSET=utf8mb4
     """)
     _ensure_column(cursor, "members", "password", f"VARCHAR(255) {BIN} NOT NULL") # 既存DBへの保険
 
+    # 入館(IN)・退館(OUT)の記録。member_id 列には「名前 (会員ID)」の形の文字列を入れる（共連れなど会員でないときは別の文字列）。
+    # is_alert=1 は警告つきの記録。
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS passing_logs (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -283,6 +311,7 @@ def init_database():
             INDEX idx_passing_ts (timestamp)
         ) DEFAULT CHARSET=utf8mb4
     """)
+    # マシンの利用記録（誰が・いつからいつまで・何秒・どのマシンか）。duration の単位は秒。
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS occupancy_logs (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -294,7 +323,8 @@ def init_database():
             INDEX idx_occupancy_member (member_id)
         ) DEFAULT CHARSET=utf8mb4
     """)
-    # エステ予約マスタテーブルの拡張
+    # エステ室の予約。status は reserved(予約済み) → in_progress(利用中) → completed(完了) と進む。
+    # 予約したのに来なかった場合は no_show、終了時刻を過ぎても居座った場合は overtime、会員が取り消した場合は cancelled になる。
     cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS esthe_reservations (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -313,39 +343,47 @@ def init_database():
     conn.commit()
     conn.close()
 
+# 起動時にDBを初期化する（uvicorn が動き出す前に、モジュールを読み込んだ時点で1回だけ実行される）。
 init_database()
 print(f">> 使用DB: MySQL {DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 print(">> [1/3] YOLO（人・椅子検出）モデルを読み込み中...")
+# YOLOのモデルは重いので、カメラ処理スレッドの中で読み込む。ここでは入れ物だけ用意しておく。
+# QRコードの検出と読み取りは、OpenCV標準の検出器を使う。
 yolo_model = None
 qr_detector = cv2.QRCodeDetector()
 
 # =========================================================================
-# 🚨 違反メール（マシンの利用時間超過）
+# 違反メール（マシンの利用時間超過）
 # =========================================================================
 _violation_mail_last = {}   # {member_id: 最後に送信した時刻}
+# カメラ処理のスレッドとメール送信のスレッドの両方から触るので、ロックで守る。
 _violation_mail_lock = threading.Lock()
 
 def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
     """時間超過した会員に、違反内容をメールで送る。送れたら True。"""
     from email.header import Header
+    # 上限秒数とマシン名を設定から引く。設定に無いマシンなら、上限0・名前はキーそのままになる。
     info = MACHINE_LIMITS.get(machine_key, {})
     limit = info.get("limit", 0.0)
     machine_name = info.get("name", machine_key)
     try:
         conn = get_conn()
         try:
+            # メールの宛先と宛名にする名前を、会員テーブルから取る。
             row = _exec(conn, "SELECT name, email FROM members WHERE member_id = %s", (member_id,)).fetchone()
         finally:
             conn.close()
     except Exception as e:
         print(f"⚠️ 違反メール：会員情報の取得に失敗: {e}")
         return False
+    # 会員が削除済み、またはメールアドレスが空なら送れない。
     if row is None or not row[1]:
         print(f"⚠️ 違反メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
         return False
     name, email = row
 
+    # 超過した時間は「利用時間 - 上限」で求めている。
     body = (
         f"{name} 様\n\n"
         "ご利用中のマシンで、利用時間の上限を超過しましたのでお知らせします。\n\n"
@@ -358,12 +396,14 @@ def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
         f"■ 超過時間：{_fmt_seconds(duration - limit)}\n\n"
         "他の会員様がお待ちの場合がありますので、上限時間内でのご利用にご協力をお願いいたします。"
     )
+    # 日本語の件名は Header で UTF-8 に包まないと文字化けする。
     msg = MIMEMultipart()
     msg["Subject"] = Header("【ジムセキュリティ】マシン利用時間超過のお知らせ", "utf-8")
     msg["From"] = SENDER_EMAIL
     msg["To"] = email
     msg.attach(MIMEText(body, "plain", "utf-8"))
     try:
+        # Gmailのサーバーに接続 → TLSで暗号化 → ログイン → 送信、の順。timeout は、応答が無いときに延々と待たないための指定。
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
             server.starttls()
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
@@ -381,6 +421,7 @@ def notify_overtime_async(member_id, machine_key, start, end, duration):
     if not member_id:
         print("⚠️ 時間超過ですが会員IDが分からないため、違反メールは送りません")
         return
+    # 同じ会員に短い間隔で何通も送らないための確認。顔の識別が揺れて、同じ人の利用が何度も区切られても、メールは1通で済む。
     now = time.time()
     with _violation_mail_lock:
         last = _violation_mail_last.get(member_id)
@@ -389,6 +430,7 @@ def notify_overtime_async(member_id, machine_key, start, end, duration):
             return
         _violation_mail_last[member_id] = now
 
+    # 実際の送信は別スレッドで行う。SMTPは数秒かかることがあり、カメラのループを止めたくないため。
     def worker():
         ok = _send_overtime_mail(member_id, machine_key, start.strftime("%Y-%m-%d %H:%M:%S"),
                                  end.strftime("%Y-%m-%d %H:%M:%S"), duration)
@@ -415,6 +457,7 @@ def _send_notification_mail(member_id, subject, body):
         return False
     name, email = row
 
+    # 本文の前に宛名、後ろに署名を付けて、どの通知も同じ体裁にする。
     full_body = f"{name} 様\n\n{body}\n\nジムセキュリティ管理システム"
     
     from email.header import Header
@@ -468,17 +511,21 @@ def notify_cotrailing_async(member_id, timestamp_str):
         )
     threading.Thread(target=worker, daemon=True).start()
 # =========================================================================
-# 💾 データベース書き込みのキュー化（ロック競合防止用）
+# データベース書き込みのキュー化（ロック競合防止用）
 # =========================================================================
+# 書き込みの要求をいったんここに溜めて、専用スレッドが順番に実行する。
+# カメラ処理が書き込み待ちで固まらないようにするのと、MySQLへの同時書き込みの競合を避ける目的。
 db_write_queue = Queue()
 
 def db_writer_worker():
     """データベースへの書き込みを1つのスレッドで直列化して実行する常駐ワーカー"""
     while True:
+        # 要求が来るまでここで待つ。None が来たらスレッドを終わらせる（今のところ None を入れている箇所は無い）。
         task = db_write_queue.get()
         if task is None:
             db_write_queue.task_done()
             break
+        # 1件ごとに接続を開いて、実行・コミットして閉じる。失敗しても例外はログに出すだけで、ワーカー自体は止めない。
         sql, params = task
         try:
             conn = get_conn()
@@ -500,18 +547,23 @@ def execute_db_write(sql, params=()):
     db_write_queue.put((sql, params))
 
 # =========================================================================
-# 💾 システム状態管理（ステート）用クラス
+# システム状態管理（ステート）用クラス
 # =========================================================================
+# システム全体の状態（入退館の人数、QRの認証状況、館内にいる会員、マシンの利用状況など）をまとめて持つクラス。
+# カメラ処理のスレッドとWeb側の処理の両方から触るので、書き換えるときは self._lock で守っている。
 class SystemStateManager:
     def __init__(self):
         self._lock = threading.Lock()
+        # 画面に出す入館・退館の人数（起動してからの累計）。
         self.in_count = 0
         self.out_count = 0
+        # 直近に読んだQRの結果。会員なら「名前 (会員ID)」、失敗なら "Invalid QR"、まだ何も読んでいなければ "None"。
         self.last_scanned_qr = "None"
         self.last_qr_time = 0.0
         self.accepted_token = None   # 直近に認証成功したQRトークン
         self.rejected_token = None   # 直近に拒否した（未登録/読み取り崩れ）QRの文字列
         self.rejected_time = 0.0
+        # 共連れ・不正入館の警告を画面に出すかどうか。
         self.co_trailing_alert = False
         
         # 館内にいる会員（QR＋顔で正規に入館し、まだ退館していない人）。退館時の識別はこの人たちに限る
@@ -519,6 +571,7 @@ class SystemStateManager:
         self.last_clothes_dist = None   # 直近の服装推定で採用した色の差（診断表示用）
         self._clothes_log_time = 0.0
         self.clothes_diag = "not evaluated"   # 直近の服装照合の結果（画面に表示。cv2は日本語を描けないので英数字）
+        # 起動時に、直近24時間のログから「いま館内にいる人」を復元しておく。
         self._restore_inside_members()
 
         # 入口の1:1照合用に直近の会員情報と顔特徴量を保持
@@ -526,13 +579,17 @@ class SystemStateManager:
         self.last_member_embedding = None
 
         # ルーム監視用の状態管理
+        # 以前のルーム監視で使っていた入れ物。今は machine_states を使うので、参照されていない。
         self.active_users = {} 
         
+        # マシンごとの利用状況。user=表示名、member_id=会員ID、start_time=座り始めた時刻(UNIX秒)、
+        # duration=経過秒、status=free/using/overtime、last_seen=最後に座っているのを確認した時刻。
         self.machine_states = {
             k: {"user": "-", "duration": 0.0, "status": "free", "start_time": None, "last_seen": None, "member_id": None} 
             for k in MACHINE_LIMITS.keys()
         }
         
+        # 画面(WebSocket)へ送る更新データの待ち行列。ws_broadcast_loop が取り出して配信する。
         self.update_queue = Queue()
         self.recent_entries = [] # 直近の入室者リスト
 
@@ -540,9 +597,11 @@ class SystemStateManager:
         """再起動で「館内にいる人」が消えないよう、直近24時間のログから復元する。"""
         try:
             from datetime import timedelta
+            # 24時間より古いログは見ない（それより前に入館して退館の記録が無い人は、もう帰ったものとみなす）。
             since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
             conn = get_conn()
             try:
+                # 自分の予約を、開始が新しい順に最大20件取る。
                 rows = _exec(conn, 
                     "SELECT timestamp, direction, member_id, is_alert FROM passing_logs WHERE timestamp >= %s ORDER BY id",
                     (since,)).fetchall()
@@ -551,7 +610,9 @@ class SystemStateManager:
         except Exception as e:
             print(f"⚠️ 館内の会員の復元に失敗: {e}")
             return
+        # ログを古い順に再生して、IN なら館内に追加、OUT なら外す。最後に残った人が「いま館内にいる人」になる。
         for ts, direction, label, alert in rows:
+            # member_id 列は「名前 (会員ID)」の形。末尾の括弧の中身が会員ID。この形でないログは読み飛ばす。
             m = re.match(r"^.*\(([^()]+)\)$", label or "")
             if not m:
                 continue
@@ -570,14 +631,15 @@ class SystemStateManager:
         with self._lock:
             return self.inside_members.pop(member_id, None) is not None
 
-    def add_recent_entry(self, member_id, name, color_feat, body_ratio, current_time): # ← 引数に body_ratio を追加
+    def add_recent_entry(self, member_id, name, color_feat, body_ratio, current_time):
         with self._lock:
+            # 古くなった記録を捨ててから、新しい記録を足す。
             self.recent_entries = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
             self.recent_entries.append({
                 "member_id": member_id,
                 "name": name,
                 "color_feat": color_feat,
-                "body_ratio": body_ratio, # ← 追加
+                "body_ratio": body_ratio,
                 "time": current_time
             })
 
@@ -592,6 +654,7 @@ class SystemStateManager:
                 self.clothes_diag = "no clothes record"
                 return None, None
 
+            # いま見えている人の服の色と体格の比率を測る。どちらかが測れなければ（骨格が取れていない等）判断しない。
             target_color = get_box_color_feature(frame, kxy, kconf)
             target_ratio = get_body_proportion_feature(kxy, kconf)
             
@@ -599,6 +662,7 @@ class SystemStateManager:
                 self.clothes_diag = "no torso/pose for feature"
                 return None, None
 
+            # 会員ごとに「服の色がいちばん近い記録」だけを残す（同じ人が何度も入館していても、1人として数えるため）。
             per_member = {}
             for entry in candidates:
                 # 1. 服の色の差
@@ -620,6 +684,7 @@ class SystemStateManager:
                 self.clothes_diag = "rejected by body ratio mismatch"
                 return None, None
 
+            # 色の差が小さい順に並べる。1位を採用の候補、2位を比較の相手にする。
             ranked = sorted(per_member.values(), key=lambda x: x[0])
             best_d, best = ranked[0]
             second_d = ranked[1][0] if len(ranked) > 1 else None
@@ -650,9 +715,12 @@ class SystemStateManager:
 
     def should_process_qr(self, qr_data: str, now: float) -> bool:
         with self._lock:
+            # 直前に認証したのと同じQRを DUPLICATE_QR_WINDOW 秒以内にまた読んだら、同じ提示の続きなので処理しない。
+            # そのとき last_qr_time だけ更新して、認証の有効期限を延ばす（かざし続けているあいだは切れない）。
             if qr_data == self.accepted_token and (now - self.last_qr_time) <= DUPLICATE_QR_WINDOW:
                 self.last_qr_time = now
                 return False
+            # 拒否済みの文字列も、しばらくは再判定しない（毎フレームDBを引いて、失敗ログが溢れるのを防ぐ）。
             if qr_data == self.rejected_token and (now - self.rejected_time) <= DUPLICATE_QR_WINDOW:
                 return False
             return True
@@ -661,6 +729,7 @@ class SystemStateManager:
         with self._lock:
             conn = get_conn(dict_cursor=True)
             cursor = conn.cursor()
+            # QRの文字列(qr_token)から会員を探す。
             cursor.execute("SELECT member_id, name, face_embedding FROM members WHERE qr_token = %s", (qr_data,))
             member = cursor.fetchone()
             conn.close()
@@ -669,6 +738,7 @@ class SystemStateManager:
                 self.accepted_token = qr_data
                 self.rejected_token = None
                 self.last_scanned_qr = f"{member['name']} ({member['member_id']})"
+                # 入口の顔照合に使うため、この会員のIDと顔特徴量を覚えておく（保存してあるバイト列を float32 の配列に戻す）。
                 self.last_member_id = member['member_id']
                 if member['face_embedding']:
                     self.last_member_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
@@ -678,6 +748,8 @@ class SystemStateManager:
             else:
                 self.rejected_token = qr_data
                 self.rejected_time = current_time
+                # 有効な認証が残っているあいだに、QRの読み取りが崩れて別の文字列になることがある。
+                # そのときは認証を取り消さず、読み取りを無視して継続する（正規の会員が通れなくなるのを防ぐ）。
                 auth_still_valid = (
                     self.last_member_id is not None
                     and (current_time - self.last_qr_time) <= CO_TRAILING_WINDOW
@@ -691,15 +763,18 @@ class SystemStateManager:
                 self.last_member_embedding = None
                 print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data!r} (長さ {len(qr_data)})")
 
+            # 認証の成否にかかわらず時刻を更新し、前回の警告表示は消して、画面に最新の状態を送る。
             self.last_qr_time = current_time
             self.co_trailing_alert = False
             self.push_update()
 
+    # 共連れ警告の表示をON/OFFして、画面に知らせる。
     def set_alert(self, state: bool):
         with self._lock:
             self.co_trailing_alert = state
             self.push_update()
 
+    # 入館・退館を1件記録する。人数のカウントを増やし、通行ログをDBに書き込む（書き込みはキュー経由）。
     def register_pass(self, direction: str, member_id: str, is_alert: int, note: str = None):
         with self._lock:
             if direction == "IN":
@@ -713,11 +788,16 @@ class SystemStateManager:
            )
         self.push_update()
 
+    # マシンの利用が1回終わったときに、利用ログをDBへ保存する。上限を超えていたら違反メールも送る。
+    # 呼び出す側（update_machine_occupancy など）が self._lock を持っている前提で動く。
     def _log_occupancy(self, m_key, m_state):
+        # 誰も使っていない・開始時刻が無い・時間が0以下のものは記録しない。
         if m_state["user"] == "-" or m_state["start_time"] is None or m_state["duration"] <= 0:
             return
+        # 開始時刻と、開始＋経過秒の終了時刻を求める（UNIX秒 → 日時）。
         start = datetime.fromtimestamp(m_state["start_time"])
         end = datetime.fromtimestamp(m_state["start_time"] + m_state["duration"])
+        # 会員IDが分かっていればそれを、無ければ表示名を記録する。
         who = m_state.get("member_id") or m_state["user"]
         try:
             # キュー経由の安全な書き込みに置き換え
@@ -728,15 +808,19 @@ class SystemStateManager:
             )
         except Exception as e:
             print(f"⚠️ 占有ログの保存に失敗: {e}")
+        # 上限を超えていたら、会員に違反メールを送る。
         if m_state["duration"] > MACHINE_LIMITS[m_key]["limit"]:
             notify_overtime_async(m_state.get("member_id"), m_key, start, end, m_state["duration"])
             
+    # 「このマシンをこの人が使っている」と報告されるたびに呼ばれて、利用者と経過時間を更新する。
+    # 利用者が入れ替わったら、前の人の利用を保存してから新しい人の計測を始める。Guest（誰か分からない人）は計測しない。
     def update_machine_occupancy(self, active_machine_key, user_name, current_time, started_at=None, member_id=None):
         with self._lock:
             for m_key in self.machine_states.keys():
                 if m_key == active_machine_key and user_name != "Guest":
                     m_state = self.machine_states[m_key]
                     m_state["last_seen"] = current_time
+                    # 利用者が変わった（または空きの状態から使い始めた）。前の利用を記録して、新しい人の計測を始める。
                     if m_state["user"] != user_name:
                         self._log_occupancy(m_key, m_state)
                         m_state["user"] = user_name
@@ -749,12 +833,15 @@ class SystemStateManager:
                         if m_state["start_time"] is not None:
                             m_state["duration"] = current_time - m_state["start_time"]
 
+                    # 上限を超えていれば overtime、そうでなければ using にする。
                     limit = MACHINE_LIMITS[m_key]["limit"]
                     if m_state["duration"] > limit:
                         m_state["status"] = "overtime"
                     else:
                         m_state["status"] = "using"
 
+    # 利用者が最後に確認されてから SEAT_RELEASE_GRACE 秒たったマシンは、立ち去ったとみなして空きに戻す。
+    # このとき利用ログも保存される。
     def release_idle_machines(self, current_time):
         with self._lock:
             for m_key, m_state in self.machine_states.items():
@@ -765,6 +852,7 @@ class SystemStateManager:
                     m_state.update({"user": "-", "duration": 0.0, "status": "free",
                                     "start_time": None, "last_seen": None, "member_id": None})
 
+    # 画面（ダッシュボード）へ送るデータを組み立てる。マシンの状態、直近の通行ログ、エステ室の状況が入る。
     def build_payload(self):
         machines_payload = []
         for key, info in MACHINE_LIMITS.items():
@@ -778,6 +866,7 @@ class SystemStateManager:
 
         conn = get_conn(dict_cursor=True)
         cursor = conn.cursor()
+        # 画面の「直近の通行」欄のために、最新の5件を取る。
         cursor.execute("SELECT timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 5")
         logs_payload = [dict(row) for row in cursor.fetchall()]
         conn.close()
@@ -794,12 +883,13 @@ class SystemStateManager:
             room_time = max(m["duration"] for m in in_use)
             room_overtime = any(m["status"] == "overtime" for m in in_use)
 
-        # 📝 エステ室の現在の状態をデータベースから取得してpayloadに含める
+        # エステ室の現在の状態をデータベースから取得してpayloadに含める
         esthe_user_name = "-"
         esthe_status_str = "FREE"
         try:
             conn_e = get_conn(dict_cursor=True)
             cur_e = conn_e.cursor()
+            # 利用中(in_progress)か超過(overtime)の予約を1件取り、利用者の名前と状態を画面に出す。
             cur_e.execute("""
                 SELECT r.id, m.name, r.status, r.end_time 
                 FROM esthe_reservations r
@@ -830,19 +920,23 @@ class SystemStateManager:
             "is_overtime": room_overtime,
             "machines": machines_payload,
             "logs": logs_payload,
-            # 📝 追加：エステ室のリアルタイム情報
+            # エステ室の現在の利用者と状態
             "esthe_user": esthe_user_name,
             "esthe_status": esthe_status_str
         }
 
+    # 最新の状態を組み立てて、画面への配信キューに入れる。
     def push_update(self):
         self.update_queue.put(self.build_payload())
 
+# アプリ全体で共有する状態管理のインスタンス。
 state = SystemStateManager()
 
+# カメラ処理のスレッドが描き終えた最新の1フレーム。/video がこれを配信する。読み書きは render_lock を取ってから行う。
 current_output_frame = None
 render_lock = threading.Lock()
 
+# 2つの顔特徴量のコサイン類似度（-1〜1。1に近いほど同じ人）。どちらかがゼロベクトルなら 0 を返す。
 def cosine_sim(a, b):
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
     if na == 0 or nb == 0:
@@ -863,6 +957,8 @@ class MemberFaceCache:
         with self._lock:
             self._dirty = True
 
+    # キャッシュが破棄済み、または ttl 秒以上たっていたらDBから読み直す。
+    # 呼び出す側は (会員IDの配列, 名前の配列, 特徴量の行列) を受け取る。
     def get(self):
         now = time.time()
         with self._lock:
@@ -890,6 +986,7 @@ class MemberFaceCache:
             n = np.linalg.norm(v)
             if n == 0:
                 continue
+            # 最初の1件の次元数を基準にして、違う次元の特徴量（別のモデルで作ったもの等）は混ぜない。
             if dim is None:
                 dim = v.shape[0]
             if v.shape[0] != dim:
@@ -900,8 +997,10 @@ class MemberFaceCache:
         self._ids, self._names = ids, names
         self._matrix = np.stack(vecs) if vecs else None
 
+# 全体で共有する会員の顔キャッシュ。登録・削除したときに invalidate() する。
 member_cache = MemberFaceCache()
 
+# 2つの長方形(x1,y1,x2,y2)の IoU（重なっている面積 ÷ 合わせた面積）。1に近いほどぴったり重なっている。
 def _iou(a, b):
     inter = _box_inter(a, b)
     union = _box_area(a) + _box_area(b) - inter
@@ -912,8 +1011,10 @@ def find_pose_for_box(pose_result, box, min_iou=0.3):
     if (pose_result is None or pose_result.boxes is None or len(pose_result.boxes) == 0
             or pose_result.keypoints is None):
         return None, None
+    # 骨格推定の結果のうち、指定した人の枠といちばん重なる1人を選ぶ。min_iou に届かなければ別人とみなして見つからない扱いにする。
     p_boxes = pose_result.boxes.xyxy.cpu().numpy()
     kxy = pose_result.keypoints.xy.cpu().numpy()
+    # 骨格点の信頼度が無いモデルの場合は、全部 1.0（見えている）として扱う。
     kcf = (pose_result.keypoints.conf.cpu().numpy() if pose_result.keypoints.conf is not None
            else np.ones(kxy.shape[:2]))
     best_i, best_iou = None, min_iou
@@ -930,6 +1031,8 @@ def clothes_roi(frame_shape, kxy, kconf):
     人の枠の割合で決めると、近づいたときに顔や首（肌）を測ってしまい、服を替えても一致してしまうため。"""
     if kxy is None or kconf is None:
         return None
+    # 骨格点の番号は COCO 形式: 5=左肩、6=右肩、11=左腰、12=右腰（ほか 13=左膝、14=右膝）。
+    # 肩がはっきり見えていないと、胸の位置が決められない。
     if kconf[5] < KP_CONF or kconf[6] < KP_CONF:
         return None
     ls, rs = kxy[5], kxy[6]
@@ -943,10 +1046,13 @@ def clothes_roi(frame_shape, kxy, kconf):
         hy = sy + 1.1 * sw       # 腰が見えない（机で隠れる等）ときは、肩幅から胴の長さを見積もる
     if hy - sy < 0.5 * sw:
         return None
+    # 測る範囲は、横が両肩の内側（肩幅の中央50%）、縦が肩から腰までの25%〜70%（胸からみぞおちのあたり）。
+    # 腕・首・襟といった、服の色以外が入りにくい場所を選んでいる。
     x1 = min(float(ls[0]), float(rs[0])) + 0.25 * sw
     x2 = max(float(ls[0]), float(rs[0])) - 0.25 * sw
     y1 = sy + 0.25 * (hy - sy)
     y2 = sy + 0.70 * (hy - sy)
+    # 画像の外にはみ出さないよう切り詰める。小さすぎる範囲は測らない。
     h_img, w_img = frame_shape[:2]
     x1, y1 = max(0, int(x1)), max(0, int(y1))
     x2, y2 = min(w_img, int(x2)), min(h_img, int(y2))
@@ -961,12 +1067,15 @@ def get_box_color_feature(frame, kxy, kconf):
     if r is None:
         return None
     roi = frame[r[1]:r[3], r[0]:r[2]]
+    # 肌色の判定には YCrCb が向いている（明るさと色味が分かれているため）。
     ycc = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
     cr, cb = ycc[:, :, 1], ycc[:, :, 2]
     skin = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)   # 手・首・顔などの肌色
+    # 肌色でない画素だけを使う。使える画素が少なすぎる、または範囲の6割以上が肌色なら当てにならないので None を返す。
     keep = ~skin
     if keep.sum() < 50 or keep.sum() < 0.4 * keep.size:
         return None
+    # 服の色は Lab 色空間の中央値で代表させる（平均より外れ値に強く、Lab は人の見た目の色の差に近い）。
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)[keep].astype(np.float32)
     return np.median(lab, axis=0)
 
@@ -983,6 +1092,7 @@ def get_body_proportion_feature(kxy, kconf):
         return None
     return shoulder_w / torso_h
 
+# Lab の色を、画面に描くための BGR の色に変換する。
 def lab_to_bgr(lab):
     bgr = cv2.cvtColor(np.uint8([[np.clip(lab, 0, 255)]]), cv2.COLOR_LAB2BGR)[0][0]
     return int(bgr[0]), int(bgr[1]), int(bgr[2])
@@ -1005,10 +1115,12 @@ _CLOTHES_WEIGHT = np.array([0.5, 1.0, 1.0], dtype=np.float32)   # 明るさ(L)�
 
 def clothes_distance(a, b):
     """2つの服装（上半身の色）の差。大きいほど別の服。"""
+    # 比べられないとき（片方が無い、形が違う）は、最大級の差(255)を返して「別の服」として扱う。
     if a is None or b is None or a.shape != b.shape:
         return 255.0
     return float(np.linalg.norm((a - b) * _CLOTHES_WEIGHT))
 
+# 入館の判定結果を (OKか, 理由) で返す関数。今の入口の処理（EntranceSession）からは呼ばれていない、以前の実装の名残。
 def judge_entry(time_since_qr, last_scanned_qr, has_embedding, best_sim):
     if last_scanned_qr == "None":
         return False, "QRが読み取られていません"
@@ -1033,12 +1145,16 @@ def identify_face_1n(embedding, member_ids, member_names, member_matrix):
     fn = np.linalg.norm(fe)
     if fn == 0 or fe.shape[0] != member_matrix.shape[1]:
         return None
+    # 会員側は正規化済みなので、行列との内積がそのままコサイン類似度になる。いちばん高い会員を返す。
     sims = member_matrix @ (fe / fn)
     idx = int(np.argmax(sims))
     return member_ids[idx], member_names[idx], float(sims[idx])
 
+# 人の体の下半分が、椅子の枠とどれだけ重なっているか（0〜1）。座っていれば下半身が椅子と重なる。
+# 椅子が複数あれば、いちばん重なっているものの値を使う。
 def sit_overlap_ratio(p_box, seat_boxes):
     px1, py1, px2, py2 = p_box
+    # 人の枠の縦の中央より下を「下半身」とみなす。
     mid_y = py1 + (py2 - py1) * 0.5
     lower_area = max(1.0, (px2 - px1) * (py2 - mid_y))
     best = 0.0
@@ -1049,6 +1165,8 @@ def sit_overlap_ratio(p_box, seat_boxes):
         best = max(best, inter / lower_area)
     return best
 
+# 「座っている」判定が一定時間つづいたかを確認するクラス。
+# 椅子の前をかすめただけ、判定が一瞬ぶれただけで、タイマーが始まったり巻き戻ったりしないようにする。
 class SitConfirmer:
     def __init__(self):
         self.since = None
@@ -1056,6 +1174,7 @@ class SitConfirmer:
         self.had_gap = False   # 前回「座っている」と判定したあと、「座っていない」判定のフレームが挟まったか
 
     def update(self, sitting_now, now):
+        # 座っていないと判定されたら、「途切れた」という印だけ付けて、確定にはしない。
         if not sitting_now:
             self.had_gap = True
             return False, self.since
@@ -1067,6 +1186,8 @@ class SitConfirmer:
         self.last_seen = now
         return (now - self.since) >= SIT_CONFIRM_SECONDS, self.since
 
+# 顔や服装で特定した会員を、一定時間おぼえておくクラス。
+# 座っているあいだは顔が下や横を向いて見えなくなりがちなので、一度特定できたら IDENTITY_HOLD_SECONDS 秒は同じ人として扱い続ける。
 class IdentityHolder:
     def __init__(self):
         self.name = None
@@ -1080,29 +1201,40 @@ class IdentityHolder:
 
     def update(self, recognized_name, recognized_id, is_sitting, now, estimated=False):
         """戻り値: (名前, 会員ID, 保持中か, 服装による推定か)"""
+        # いまのフレームで特定できたら、その人で上書きして時刻を更新する。
         if recognized_name != "Guest":
             self.name, self.member_id, self.time, self.estimated = recognized_name, recognized_id, now, estimated
             return recognized_name, recognized_id, False, estimated
+        # 特定できなかったが、直前の特定がまだ有効期間内なら、その人のままにする。座っているあいだは期限を延ばし続ける。
         if self.has_identity(now):
             if is_sitting:
                 self.time = now
             return self.name, self.member_id, True, self.estimated
+        # 期限切れ。誰とも分からない状態に戻す。
         self.name, self.member_id, self.estimated = None, None, False
         return "Guest", None, False, False
 
+# 2つの枠が重なっている部分の面積。重なっていなければ 0。
 def _box_inter(a, b):
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
 
+# 枠の面積。0 で割ってしまわないよう、最小を 1 にしている。
 def _box_area(a):
     return max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
 
+# 椅子の位置を覚えておく処理。人が座ると椅子が人に隠れて検出されなくなるので、いちど見つけた椅子は SEAT_MEMORY_SECONDS 秒は覚えておく。
+# memory は [{box, last_seen, live}] のリストで、毎フレーム、検出結果(detected)と突き合わせて更新する。
+# 戻り値は、いま有効な椅子の枠の一覧。
 def update_seat_memory(memory, detected, person_boxes, now):
     for m in memory:
         m["live"] = False
     used = set()
     for m in memory:
+        # この記憶の椅子が、人に隠れている（人の枠が椅子に十分重なっている）かどうか。
         occluded = any(_box_inter(p, m["box"]) / _box_area(m["box"]) >= SEAT_OCCLUDED_RATIO for p in person_boxes)
         best_j, best_score = None, 0.0
+        # 検出された椅子の中から、この記憶と同じ椅子とみなせるものを探す。
+        # IoU が高いか、検出枠が記憶の枠にほぼ収まっていれば同じ椅子とする。
         for j, d in enumerate(detected):
             if j in used:
                 continue
@@ -1112,37 +1244,47 @@ def update_seat_memory(memory, detected, person_boxes, now):
             score = max(iou, contained if contained >= 0.7 else 0.0)
             if score >= 0.3 and score > best_score:
                 best_j, best_score = j, score
+        # 見つかった: 位置を更新する（ただし人に隠れて枠が欠けて見えているときは、元の枠を残す）。
         if best_j is not None:
             used.add(best_j)
             m["live"] = True
             m["last_seen"] = now
             if not occluded:
                 m["box"] = detected[best_j]
+        # 見つからないが人に隠れているだけなので、記憶の期限を延ばす。
         elif occluded:
             m["last_seen"] = now
+    # どの記憶にも対応しなかった検出は、新しい椅子として覚える。
     for j, d in enumerate(detected):
         if j not in used:
             memory.append({"box": d, "last_seen": now, "live": True})
+    # 期限切れの椅子を忘れる。
     memory[:] = [m for m in memory if now - m["last_seen"] <= SEAT_MEMORY_SECONDS]
     return [m["box"] for m in memory]
 
+# 指定した骨格点のうち、信頼度が十分で画面内にある点だけの平均位置を返す（左右の腰など）。1つも見えなければ None。
 def _visible_mean(kxy, kconf, idxs):
     pts = [kxy[i] for i in idxs if kconf[i] >= KP_CONF and (kxy[i][0] > 0 or kxy[i][1] > 0)]
     if not pts:
         return None
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
+# 腰の位置が椅子の枠の上にあるか（横は枠の内側、縦は枠の上端から margin 分だけ上〜下端まで）。
 def _hip_on_seat(hip, seat, margin=None):
     sx1, sy1, sx2, sy2 = seat
     margin = HIP_SEAT_MARGIN if margin is None else margin
     top = sy1 - margin * (sy2 - sy1)
     return sx1 <= hip[0] <= sx2 and top <= hip[1] <= sy2
 
+# 人が椅子に座っているかを判定して、(座っているか, 椅子との重なり, 理由の文字列) を返す。
+# 順に、1) 下半身が椅子と十分重なっている 2) 腰が椅子の上にある 3) 膝と腰の高さの差が小さい（脚が曲がっている）を確かめる。
+# 骨格が一部しか取れていないときは、見えている点だけで代わりの判定をする。
 def evaluate_sitting(box, kxy, kconf, seat_boxes):
     overlap = sit_overlap_ratio(box, seat_boxes) if seat_boxes else 0.0
     if overlap < SIT_OVERLAP_RATIO:
         return False, overlap, "overlap"
 
+    # 骨格点の番号: 11,12=腰、5,6=肩、13,14=膝。
     hip = _visible_mean(kxy, kconf, (11, 12))
     shoulder = _visible_mean(kxy, kconf, (5, 6))
     if hip is not None:
@@ -1152,6 +1294,7 @@ def evaluate_sitting(box, kxy, kconf, seat_boxes):
         if knee is not None:
             torso = (hip[1] - shoulder[1]) if shoulder is not None else (box[3] - box[1]) * 0.3
             torso = max(torso, 1.0)
+            # 膝が腰よりどれだけ下にあるかを、胴の長さで割る。立っていると約1、座ると小さくなる。しきい値以上なら立っているとみなす。
             drop = (knee[1] - hip[1]) / torso
             if drop >= SIT_THIGH_DROP_RATIO:
                 return False, overlap, f"standing-legs(drop={drop:.2f})"
@@ -1172,7 +1315,7 @@ def evaluate_sitting(box, kxy, kconf, seat_boxes):
     return True, overlap, f"box(h/w={h / w:.1f})"
 
 # =========================================================================
-# 🚪 入口の認証セッション（QR → 顔の一致 → 線の通過 を1人分まとめて管理）
+# 入口の認証セッション（QR → 顔の一致 → 線の通過 を1人分まとめて管理）
 # =========================================================================
 class EntranceSession:
     """QRを読んだ会員1人分の状態を管理する（入口モード用）。
@@ -1203,6 +1346,7 @@ class EntranceSession:
         self.done = False
         self.last_face_sims = []     # [(face, 会員との類似度)] 描画用
 
+    # 枠 (x1,y1,x2,y2) の中心の座標。
     @staticmethod
     def _center(box):
         return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
@@ -1226,8 +1370,10 @@ class EntranceSession:
         戻り値: None / "authed"（顔認証OK）/ "crossed"（通過=入館）/ "expired"（時間切れ）"""
         if self.done:
             return None
+        # ほかの会員の認証セッションが追っている枠は、自分の本人候補から外す。
         others = set(claimed)
         others.discard(self.track_id)
+        # QRを読んでから有効時間が過ぎたら、この認証セッションは時間切れで終わる。
         if now - self.qr_time > CO_TRAILING_WINDOW:
             self.done = True
             return "expired"
@@ -1299,7 +1445,7 @@ class EntranceSession:
         return event
 
 # =========================================================================
-# 🚪 線の通過検出・共連れ判定
+# 線の通過検出・共連れ判定
 # =========================================================================
 class LineTracker:
     """追跡IDごとに、入口ラインの左右どちら側にいるかを覚えて、通過（左→右 "in" / 右→左 "out"）を検出する。
@@ -1322,6 +1468,8 @@ class LineTracker:
             self._h[tid] = {"side": -1 if x < self.line_x else 1, "x": x, "y": y, "time": now}
             return None
         event = None
+        # 左側にいた枠が、ラインより margin 以上右に来たら「入館方向(in)」、逆なら「退館方向(out)」とする。
+        # ライン付近で揺れているだけのあいだは左右が切り替わらないので、通過にはならない。
         if rec["side"] < 0 and x >= self.line_x + self.margin:
             rec["side"], event = 1, "in"
         elif rec["side"] > 0 and x <= self.line_x - self.margin:
@@ -1333,6 +1481,8 @@ class LineTracker:
         """positions: {track_id: (x, y)}（いまのフレームに見えている枠）。
         履歴のない新しい枠を、最近見失った枠のうち近いものと対応づけ、履歴を引き継ぐ。
         戻り値: {新しいID: 古いID}（ほかの履歴を引き継ぐときに使う）"""
+        # new_ids=いまのフレームで初めて見えた枠、lost_ids=直前まで見えていたのに今は見えない枠。
+        # 新しい枠が、見失った枠の近くに現れたのなら、同じ人とみなす。
         new_ids = [t for t in positions if t not in self._h]
         lost_ids = [t for t, r in self._h.items() if t not in positions and now - r["time"] <= TRACK_LINK_SECONDS]
         pairs = []
@@ -1344,6 +1494,7 @@ class LineTracker:
                 d = float(np.hypot(nx - r["x"], ny - r["y"]))
                 if d <= allowed:
                     pairs.append((d, n, o))
+        # 距離が近い組み合わせから順に確定していく（1つの枠を2人に割り当てないため）。
         pairs.sort()
         mapping, used_new, used_old = {}, set(), set()
         for d, n, o in pairs:
@@ -1352,10 +1503,12 @@ class LineTracker:
             used_new.add(n)
             used_old.add(o)
             mapping[n] = o
+        # 履歴の持ち主を、古いIDから新しいIDに付け替える。
         for n, o in mapping.items():
             self._h[n] = self._h.pop(o)
         return mapping
 
+    # 長いこと見えていない追跡IDの履歴を捨てる。
     def cleanup(self, now):
         for t in [t for t, r in self._h.items() if now - r["time"] > self.ttl]:
             del self._h[t]
@@ -1385,6 +1538,7 @@ class CrossingJudge:
     def reset(self):
         self.pending = []
 
+    # 追跡IDが付け替わったとき、保留中の判定の対象IDも新しいほうに合わせる。
     def remap(self, old_id, new_id):
         for p in self.pending:
             if p["tid"] == old_id:
@@ -1399,13 +1553,16 @@ class CrossingJudge:
     def on_cross_in(self, tid, center, now, sessions, owned_by_tid):
         """線を左→右にまたいだ枠 tid を判定する。owned_by_tid は {追跡ID: 本人として追っているセッション}。
         戻り値: 確定した判定のリスト [("co_trailing", 疑いのセッション, tid) / ("intrusion", None, tid)]"""
+        # 越えたのが認証セッションの本人なら、正規の通過なので何もしない（本人の入館の判定は EntranceSession 側で行う）。
         owner = owned_by_tid.get(tid)
         if owner is not None:
             owner.armed = True   # 線の左から来たことが確かなので、本人の通過判定に使える
             return []
+        # まだ有効なQRを持っている人（共連れの手引きをした可能性がある人）を集める。1人もいなければ、QRなしの侵入。
         cands = [s for s in sessions if s.grant_valid(now)]
         if not cands:
             return [("intrusion", None, tid)]
+        # 顔認証がまだの人がいると、いま通ったのはその人本人かもしれない。猶予時間のあいだ、判定を保留する。
         if any((not s.done) and (not s.authed) for s in cands):
             self.pending.append({"tid": tid, "center": center, "time": now, "cands": cands})
             return []
@@ -1413,6 +1570,7 @@ class CrossingJudge:
 
     def poll(self, now, owned_by_tid):
         """保留中の通過を見直す。本人の枠と分かれば取り下げ、猶予が過ぎれば確定する。"""
+        # 保留中の通過を1件ずつ見直す。
         decided, keep = [], []
         for p in self.pending:
             owner = owned_by_tid.get(p["tid"])
@@ -1429,16 +1587,17 @@ class CrossingJudge:
         return decided
 
 # =========================================================================
-# 🎥 カメラ処理ループ
+# カメラ処理ループ
 # =========================================================================
-# =========================================================================
-# 🎥 カメラ処理ループ
-# =========================================================================
+# カメラの映像を読み続けて、モードごとの判定を行うメインのループ（専用のスレッドで動く）。
+# entrance=入口の入退館 / esthe=エステ室の入室と占有の監視 / room=トレーニングルームの座り判定とマシン利用時間 / register=カメラを手放して待機。
 def camera_processing_loop():
     global current_output_frame, yolo_model
+    # 重いライブラリはここで読み込む（Webサーバーの起動を遅らせないため）。
     from ultralytics import YOLO
     from insightface.app import FaceAnalysis
 
+    # 使うモデルは4つ。人の検出(入口・エステ用)、人と椅子の検出(ルーム用)、骨格推定、顔認識(insightface)。
     yolo_model = YOLO("yolo11n.pt")
     room_model = YOLO(ROOM_MODEL_PATH)
     pose_model = YOLO(POSE_MODEL_PATH)
@@ -1446,6 +1605,7 @@ def camera_processing_loop():
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
     face_app.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
 
+    # カメラが開けるまで、3秒おきにやり直す。
     cap = open_camera()
     while not cap.isOpened():
         print("❌ エラー: カメラを開けませんでした。3秒後に再試行します...")
@@ -1460,6 +1620,7 @@ def camera_processing_loop():
 
     line_tracker = LineTracker(LINE_X, LINE_HYSTERESIS_PX)   # 追跡IDごとの線の左右（ヒステリシス付き）
     crossing_judge = CrossingJudge()                         # 本人の枠でない通過者の共連れ／侵入判定
+    # 追跡IDごとの顔照合の記録 {追跡ID: {best:最大の類似度, time, member_id}}。
     face_sim_history = {}
     exit_id_history = {}   # 退館用：追跡IDごとに、顔で識別した会員 {member_id, name, sim, time}
     last_push_time = 0.0
@@ -1468,11 +1629,15 @@ def camera_processing_loop():
     loop_dt = 0.0
     last_slow_log = 0.0
     last_face_log = 0.0
+    # 注意: 座り判定の確定タイマー(sit_confirmer)と本人の保持(identity_holder)は、それぞれ1つだけ作っていて、人ごとには持っていない。
+    # ルームに複数人いるときは、人が入れ替わるたびに状態が混ざる。複数人を正確に扱うなら、人ごとに持たせる必要がある。
     sit_confirmer = SitConfirmer()
     seat_memory = []
     identity_holder = IdentityHolder()
     clothes_mismatch_since = None   # 服装で推定した本人の服が合わなくなり始めた時刻
 
+    # 入館した人の服の色と体格の比率を、骨格推定で測って返す。測れなければ (None, None)。
+    # あとでルームで顔が見えないときに、本人を推定するための材料になる。
     def entrance_body_and_clothes_feature(frame, box, member_id):
         try:
             res = pose_model(frame, conf=0.3, imgsz=YOLO_IMGSZ, verbose=False)[0]
@@ -1500,6 +1665,7 @@ def camera_processing_loop():
             state.register_pass("IN", "Unknown / No QR", 1, note="QRなし・単独での未認証通過")
             state.last_scanned_qr = "None"
 
+    # sit_log は今のところ参照されていない。
     sit_log = {"key": None, "time": 0.0}
     entrance_sessions = []    # 入口：QRを読んだ会員ごとの認証セッション
     auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}
@@ -1513,9 +1679,10 @@ def camera_processing_loop():
             current_time = time.time()
             
             with mode_lock:
+                # 今のモードを読む（Webの画面を開いたときにも切り替わるため、ロックを取ってから読んでいる）。
                 mode = active_mode
         
-            # 🛑 【registerモード】ブラウザでの顔撮影のため、Python側のカメラを一時解放する
+            # 【registerモード】ブラウザでの顔撮影のため、Python側のカメラを一時解放する
             if mode == "register":
                 if cap.isOpened():
                     cap.release()
@@ -1531,33 +1698,40 @@ def camera_processing_loop():
                     time.sleep(1)
                     cap = open_camera()
 
+            # 1フレームの処理時間を、移動平均でならして測る（処理が重いと、タイマー系の判定がずれるため）。
             if prev_frame_time is not None:
                 loop_dt = 0.8 * loop_dt + 0.2 * (current_time - prev_frame_time)
             prev_frame_time = current_time
             
+            # カメラから1フレーム読む。失敗したら少し待ってやり直す。
             success, frame = cap.read()
             if not success:
                 time.sleep(0.03)
                 continue
 
+            # カメラが指定の解像度で出してくれなかったときは、ここで揃える（以降の座標の計算は FRAME_W/FRAME_H が前提）。
             if frame.shape[1] != FRAME_W or frame.shape[0] != FRAME_H:
                 frame = cv2.resize(frame, (FRAME_W, FRAME_H))
 
+            # 入口モード以外のあいだは、入口の認証セッションと共連れの保留判定を捨てる（モードを戻したとき、古い状態が残らないように）。
             if mode != "entrance":
                 entrance_sessions = []
                 crossing_judge.reset()
 
             if mode == "entrance":
+                # 入口: まずQRコードを探す。見つかったら緑の枠で囲む。
                 qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
                 if qr_bbox is not None and len(qr_bbox) > 0:
                     pts = qr_bbox[0].astype(int)
                     for i in range(4):
                         cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (0, 255, 0), THICK)
                     if qr_data:
+                        # 新しく提示されたQRなら会員を照合して、認証セッション（顔の一致と線の通過を見届ける係）を作る。
                         if state.should_process_qr(qr_data, current_time):
                             state.process_qr(qr_data, current_time)
                             if (state.accepted_token == qr_data and state.last_member_id is not None
                                     and state.last_member_embedding is not None):
+                                # 同じ会員のセッションがすでにあれば、作り直す。
                                 entrance_sessions = [s for s in entrance_sessions if s.member_id != state.last_member_id]
                                 entrance_sessions.append(EntranceSession(state.last_member_id, state.last_scanned_qr,
                                                                          state.last_member_embedding,
@@ -1566,27 +1740,35 @@ def camera_processing_loop():
                             elif state.last_scanned_qr == "Invalid QR":
                                 entrance_sessions = []
                         else:
+                            # 同じQRをかざし続けているあいだは、認証の有効時間を延ばす。
                             for s in entrance_sessions:
                                 if s.token == qr_data and not s.done and not s.consumed:
                                     s.qr_time = current_time
 
+                # 画面に映っている全員の顔を検出して、特徴量を出す。
                 faces = face_app.get(frame)
 
+                # 人(class 0)を検出して、追跡IDを付ける。persist=True にすると、前のフレームとのIDの対応を引き継ぐ。
                 yolo_results = yolo_model.track(frame, persist=True, classes=[0], imgsz=YOLO_IMGSZ, verbose=False)
+                # 通過判定のラインを青で描く。
                 cv2.line(frame, (LINE_X, 0), (LINE_X, FRAME_H), (255, 0, 0), THICK)
                 put_text(frame, "GATE LINE", (LINE_X + 10, int(30 * UI)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, hud=False)
 
+                # 長いこと見えていない追跡IDの記録を捨てる。
                 for tid in [t for t, r in face_sim_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                     del face_sim_history[tid]
                 for tid in [t for t, r in exit_id_history.items() if current_time - r["time"] > FACE_TIMEOUT * 4]:
                     del exit_id_history[tid]
+                # 退館のときの顔識別のために、全会員の顔特徴量を取り出す（キャッシュ済みなのでDBは毎回は引かない）。
                 member_ids, member_names, member_matrix = member_cache.get()
 
+                # 追跡の結果を、(追跡ID, 枠) のリストにまとめる。
                 tracked = []
                 if yolo_results[0].boxes.id is not None:
                     tracked = list(zip(yolo_results[0].boxes.id.cpu().numpy().astype(int).tolist(),
                                        yolo_results[0].boxes.xyxy.cpu().numpy()))
 
+                # 追跡IDが付け替わっても同じ人なら履歴を引き継ぐ（見失った直後に近くへ現れた新しい枠を、同じ人とみなす）。
                 positions = {t: ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for t, b in tracked}
                 for new_id, old_id in line_tracker.link_new_tracks(positions, current_time).items():
                     for hist in (face_sim_history, exit_id_history):
@@ -1598,8 +1780,10 @@ def camera_processing_loop():
                     crossing_judge.remap(old_id, new_id)
                 line_tracker.cleanup(current_time)
 
+                # ここから、QRを読んだ会員ごとの認証セッションを、1フレーム分だけ進める。
                 face_sims = []
                 owned_by_tid = {}
+                # claimed は、すでにどこかの会員の本人として追われている枠。
                 claimed = {s.track_id for s in entrance_sessions if not s.done and s.track_id is not None}
                 for sess in entrance_sessions:
                     if sess.done:
@@ -1608,14 +1792,19 @@ def camera_processing_loop():
                     if sess.track_id is not None:
                         claimed.add(sess.track_id)
                     face_sims.extend(sess.last_face_sims)
+                    # label は「名前 (会員ID)」の形。名前の部分だけを取り出す。
                     member_name = sess.label.split(" (")[0] if " (" in sess.label else sess.label
+                    # ev は、このフレームで起きた出来事: authed=顔が一致、crossed=線を越えて入館、expired=時間切れ。
                     if ev == "authed":
+                        # 顔が一致した時点の服装を先に測っておく（入館の瞬間に測れなかったときの予備にする）。
                         if sess.last_box is not None:
                             sess.clothes_feat = entrance_body_and_clothes_feature(frame, sess.last_box, sess.member_id)
                     elif ev == "crossed":
+                        # 入館が成立した: 通行ログに記録して、館内にいる会員として登録する。
                         state.register_pass("IN", sess.label, 0,
                                             note=f"QRと顔が一致（顔の類似度 {sess.match_sim:.2f}）／顔認証後、線の向こう側で本人を確認")
                         state.mark_inside(sess.member_id)
+                        # 入館の瞬間の服装と体格を測る。測れないときは、顔が一致した時点で測った値で代用する。
                         if sess.last_box is not None:
                             color_feat, body_ratio = entrance_body_and_clothes_feature(frame, sess.last_box, sess.member_id)
                         else:
@@ -1630,6 +1819,7 @@ def camera_processing_loop():
                         
                         auth_banner.update(text=f"IN OK: {sess.member_id}", color=(0, 255, 0),
                                            until=current_time + ENTRANCE_BANNER_SECONDS)
+                    # 時間切れ。顔認証までできていれば単なる失効、顔は見えたのに会員と合わなければ警告、顔が映らなければタイムアウトと表示する。
                     elif ev == "expired":
                         if sess.authed:
                             auth_banner.update(text=f"AUTH EXPIRED: {sess.member_id}", color=(0, 165, 255),
@@ -1641,9 +1831,11 @@ def camera_processing_loop():
                         else:
                             auth_banner.update(text=f"AUTH TIMEOUT (no face): {sess.member_id}", color=(0, 165, 255),
                                                until=current_time + ENTRANCE_BANNER_SECONDS)
+                    # このフレームで本人として追えている枠を記録する（通過した枠が、共連れと間違われないようにするため）。
                     if sess.track_id is not None and (not sess.done or ev == "crossed"):
                         owned_by_tid[sess.track_id] = sess
 
+                # 顔の枠に、会員との類似度を重ねて表示する（しきい値を超えたら黄色で表示）。
                 sim_by_face = {}
                 for f, sv in face_sims:
                     if sv > sim_by_face.get(id(f), -1.0):
@@ -1658,6 +1850,7 @@ def camera_processing_loop():
                         put_text(frame, f"face:{fsim:.2f}", (int(fb[0]), max(int(15 * UI), int(fb[1]) - int(8 * UI))),
                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255) if matched else (200, 200, 200), 1, hud=False)
 
+                # 検出された人ごとに、枠の描画、顔の照合、ラインの通過判定を行う。
                 if yolo_results[0].boxes.id is not None:
                     boxes = yolo_results[0].boxes.xyxy.cpu().numpy()
                     track_ids = yolo_results[0].boxes.id.cpu().numpy().astype(int)
@@ -1668,6 +1861,7 @@ def camera_processing_loop():
                         put_text(frame, f"ID:{track_id}", (int(box[0]), int(box[3]) + int(18 * UI)),
                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, hud=False)
 
+                        # 直近にQRを読んだ会員の顔と、この人の枠の中の顔を比べて、追跡IDごとに最大の類似度を残す（画面表示・診断用）。
                         if state.last_member_embedding is not None:
                             for face in faces:
                                 fcx = (face.bbox[0] + face.bbox[2]) / 2
@@ -1687,6 +1881,7 @@ def camera_processing_loop():
                             fcy = (face.bbox[1] + face.bbox[3]) / 2
                             if not (box[0] <= fcx <= box[2] and box[1] <= fcy <= box[3]):
                                 continue
+                            # 退館用: この人の顔を全会員と照合して、いちばん似ている会員を追跡IDに結びつけて残す。EXIT_FACE_THRESHOLD 以下なら識別しない。
                             ident = identify_face_1n(face.embedding, member_ids, member_names, member_matrix)
                             if ident is None or ident[2] <= EXIT_FACE_THRESHOLD:
                                 continue
@@ -1703,14 +1898,18 @@ def camera_processing_loop():
                                      (int(box[0]), int(box[3]) + int(36 * UI)),
                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1, hud=False)
 
+                        # ラインのどちら側にいるかを更新する。越えた瞬間なら、'in'（左→右）か 'out'（右→左）が返ってくる。
                         crossing = line_tracker.update(int(track_id), x_center, (box[1] + box[3]) / 2, current_time)
 
+                        # 左から右へ越えた。本人の枠でなければ、共連れか未認証の侵入かを判定する。
                         if crossing == "in":
                             for kind, suspect, tid_ in crossing_judge.on_cross_in(
                                     int(track_id), (x_center, (box[1] + box[3]) / 2), current_time,
                                     entrance_sessions, owned_by_tid):
                                 report_unauthorized_pass(kind, suspect, tid_, entrance_sessions, current_time)
 
+                        # 右から左へ越えた＝退館。顔で識別できた会員が館内にいると記録されていれば、その人の退館として記録する。
+                        # 識別できなかったときは「不明」の退館として記録する。
                         elif crossing == "out":
                             erec = exit_id_history.get(track_id)
                             if erec is not None and current_time - erec["time"] <= FACE_TIMEOUT:
@@ -1722,9 +1921,11 @@ def camera_processing_loop():
                             else:
                                 state.register_pass("OUT", "Unknown / Guest", 0, note="顔未識別での退館")
 
+                # 保留にしていた通過を見直して、猶予が過ぎたものを確定させる。
                 for kind, suspect, tid_ in crossing_judge.poll(current_time, owned_by_tid):
                     report_unauthorized_pass(kind, suspect, tid_, entrance_sessions, current_time)
 
+                # 有効期限の切れた認証セッションを片づける。
                 entrance_sessions = [s for s in entrance_sessions if current_time - s.qr_time <= CO_TRAILING_WINDOW]
 
                 put_text(frame, "MODE: [ENTRANCE (IN: QR+Face / OUT: Face)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
@@ -1733,15 +1934,17 @@ def camera_processing_loop():
             elif mode == "esthe":
                 put_text(frame, "MODE: [ESTHE (QR Entry & Occupancy Monitor)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
                 
-                # 1️⃣ エステ室用のQRコード読み取りと入室処理
+                # (1) エステ室用のQRコード読み取りと入室処理
                 qr_data, qr_bbox, _ = qr_detector.detectAndDecode(frame)
                 if qr_bbox is not None and len(qr_bbox) > 0:
                     pts = qr_bbox[0].astype(int)
                     for i in range(4):
                         cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (255, 0, 255), THICK)
+                    # エステ室のQRは、有効な予約があればその場で「利用中」にする（顔の照合はしない）。
                     if qr_data and state.should_process_qr(qr_data, current_time):
                         conn = get_conn(dict_cursor=True)
                         try:
+                            # QRの文字列から会員を特定する。
                             member = _exec(conn, "SELECT member_id, name FROM members WHERE qr_token = %s", (qr_data,)).fetchone()
                             if member:
                                 m_id = member["member_id"]
@@ -1765,10 +1968,12 @@ def camera_processing_loop():
                         finally:
                             conn.close()
 
-                # 2️⃣ エステ室の利用時間超過（長時間占有）を10秒おきにチェックする処理
+                # (2) エステ室の利用時間超過（長時間占有）を10秒おきにチェックする処理
+                # 前回チェックした時刻。初回だけ変数が無いので、ここで 0 にしておく。
                 if 'last_esthe_check' not in locals():
                     last_esthe_check = 0.0
                 
+                # ESTHE_CHECK_INTERVAL 秒おきに、無断キャンセルと時間超過を調べる（毎フレームDBを引かないため）。
                 if current_time - last_esthe_check > ESTHE_CHECK_INTERVAL:
                     last_esthe_check = current_time
                     try:
@@ -1776,6 +1981,7 @@ def camera_processing_loop():
                         # 無断キャンセル（予約したのに来ていない）も、スコア画面を開かなくてもここで検知する
                         mark_esthe_noshows(conn)
 
+                        # 利用中なのに終了時刻を過ぎている予約を探して、overtime に変え、会員に超過メールを送る。
                         overdue_res = _exec(conn, """
                             SELECT r.id, r.member_id, r.start_time, r.end_time, m.name
                             FROM esthe_reservations r
@@ -1796,7 +2002,8 @@ def camera_processing_loop():
                     except Exception as e:
                         print(f"⚠️ エステ超過チェックエラー: {e}")
 
-                # 3️⃣ 【NEW】エステ室から人がいなくなったら自動で「完了(completed)」にする処理
+                # (3) エステ室から人がいなくなったら自動で「完了(completed)」にする処理
+                # 最後に人が映っていた時刻。初回だけ変数が無いので、ここで今の時刻にしておく。
                 if 'esthe_last_person_time' not in locals():
                     esthe_last_person_time = current_time
 
@@ -1833,6 +2040,7 @@ def camera_processing_loop():
                 
                 person_boxes = []
                 seat_boxes = []
+                # 検出結果を、人(class 0)と椅子(SEAT_CLASSES)に振り分ける。椅子はオレンジの枠で描く。
                 for box_data in room_results.boxes.data.cpu().numpy():
                     x1, y1, x2, y2, conf, cls_id = box_data
                     box = [int(x1), int(y1), int(x2), int(y2)]
@@ -1865,6 +2073,8 @@ def camera_processing_loop():
                     is_sitting, overlap, reason = evaluate_sitting(p_box, kxy, kconf, active_seats)
 
                     # 本人の特定（顔認識または服装補助）
+                    # 注意: 人1人ごとに、フレーム全体の顔検出をやり直している。人が増えるとその分だけ重くなる。
+                    # 気になるなら、人のループの外で1回だけ検出して使い回す形に直せる。
                     faces = face_app.get(frame)
                     recognized_name, recognized_id = "Guest", None
                     
@@ -1895,7 +2105,8 @@ def camera_processing_loop():
                         confirmed, since_t = sit_confirmer.update(True, current_time)
                         if confirmed:
                             status_str += " (Sitting)"
-                            # どのマシン付近に座っているか判定して紐付け
+                            # 注意: 実際にはマシンの位置との照合をしておらず、座っている人を全マシンの利用者として登録している。
+                            # マシンごとに使う人を分けたいなら、椅子とマシンの対応づけが別途必要。
                             for m_key in MACHINE_LIMITS.keys():
                                 state.update_machine_occupancy(m_key, name, current_time, started_at=since_t, member_id=member_id)
                         else:
@@ -1923,6 +2134,7 @@ def camera_processing_loop():
             time.sleep(0.1)
     cap.release()
 
+# コンソールで Enter キーを押すたびに、入口 → ルーム → エステ → 入口 … とモードを切り替える（動作確認用）。
 def console_switcher_thread():
     global active_mode
     while True:
@@ -1943,19 +2155,20 @@ def console_switcher_thread():
             break
 
 # =========================================================================
-# 🚀 FastAPI ルーティング & API設定
+# FastAPI ルーティング & API設定
 # =========================================================================
+# 画面を開いているブラウザ(WebSocket)の一覧。ここへ状態を配信する。
 connected_websockets = []
 
-# 📝 登録画面への導線（ポータルから押されたときだけセッション許可を与える）
+# 登録画面への導線（ポータルから押されたときだけセッション許可を与える）
 @app.get("/api/start-register")
 def api_start_register(request: Request):
+    # 登録ページ(/register)は、ここを通ったときだけ開けるようにしている。URLを直接打っても入れない。
     request.session["allow_register"] = True
     return RedirectResponse(url="/register", status_code=303)
 
-# main_3.py の該当部分を以下のように修正
 
-# 📝 カメラの競合を防ぐためのロックやフラグ（ファイル上部に追加してもOK）
+# 以前カメラの競合防止に用意したロック。現在はどこからも使われていない。
 camera_lock = threading.Lock()
 
 @app.get("/register", response_class=HTMLResponse)
@@ -1967,23 +2180,24 @@ def get_register_page(request: Request):
     # 一度アクセスしたら通行証を消す
     request.session.pop("allow_register", None)
 
-    # 🛑 レジスター画面を開いたときは、確実にカメラモードを "register" にして解放を促す
+    # レジスター画面を開いたときは、確実にカメラモードを "register" にして解放を促す
     with mode_lock:
         global active_mode
         active_mode = "register"
 
-    # 💡 万が一キャプチャが開きっぱなしなら、ここで強制的に解放をかける
+    # 万が一キャプチャが開きっぱなしなら、ここで強制的に解放をかける
     # （カメラ処理ループ側の `active_mode == "register"` の判定とも連動します）
 
     return templates.TemplateResponse(request, "register.html", {})
 
-# 📝 エステ予約用リクエストモデル（誰の予約かは、ログイン中の会員のセッションから決める）
+# エステ予約用リクエストモデル（誰の予約かは、ログイン中の会員のセッションから決める）
 class EstheReserveRequest(BaseModel):
     start_time: str  # 例: "2026-11-06 14:00:00"
 
 class EstheCancelRequest(BaseModel):
     reservation_id: int
 
+# エステ予約の設定値（すべて秒単位）。動作確認しやすいように短くしてある。実運用では分単位に直すこと。
 ESTHE_SLOT_SECONDS = 20            # 予約1枠の長さ（秒）。開始時刻もこの刻み（秒が 00・20・40）に揃える
 ESTHE_EARLY_ENTRY_SECONDS = 20     # 開始のこの秒数前から入室できる
 ESTHE_CHECK_INTERVAL = 3.0         # 時間超過・無断キャンセルをチェックする間隔（秒）
@@ -2007,20 +2221,23 @@ def mark_esthe_noshows(conn, member_id=None):
             notify_esthe_noshow_async(mid, str(start))
     conn.commit()
 
+# 会員ログインが必要なAPIで、未ログインのときに返す共通の応答（HTTP 401）。
 def _login_required_json():
     return JSONResponse({"status": "error", "message": "ログインが必要です。ポータルからログインしてください。"}, status_code=401)
 
 ESTHE_TIME_FMT = "%H:%M:%S"   # 枠が秒単位なので、画面に出す時刻も秒まで出す
 
-# 📝 エステ予約登録API（会員ログイン必須）
+# エステ予約登録API（会員ログイン必須）
 @app.post("/api/esthe/reserve")
 def api_reserve_esthe(request: Request, data: EstheReserveRequest):
+    # 予約をする人は、画面から送らせずにログイン中のセッションから決める（他人の名前で予約できないようにするため）。
     member_id = request.session.get("member_id")
     if not member_id:
         return _login_required_json()
     try:
         from datetime import timedelta
         try:
+            # 日時の文字列を解釈する。形式が違えばエラーを返す。
             start_dt = datetime.strptime(data.start_time, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             return {"status": "error", "message": "日時の形式が正しくありません。"}
@@ -2029,6 +2246,7 @@ def api_reserve_esthe(request: Request, data: EstheReserveRequest):
             return {"status": "error", "message": f"{ESTHE_SLOT_SECONDS}秒刻みの時刻（秒が00・20・40）を選んでください。"}
         if start_dt <= datetime.now():
             return {"status": "error", "message": "過去の日時は予約できません。"}
+        # 終了時刻は、開始時刻 ＋ 1枠の長さ。
         end_dt = start_dt + timedelta(seconds=ESTHE_SLOT_SECONDS)
 
         conn = get_conn(dict_cursor=True)
@@ -2057,7 +2275,7 @@ def api_reserve_esthe(request: Request, data: EstheReserveRequest):
         print(f"⚠️ エステ予約エラー: {e}")
         return {"status": "error", "message": "予約に失敗しました。時間をおいてもう一度お試しください。"}
 
-# 📝 自分のエステ予約の一覧（新しい順に最大20件）
+# 自分のエステ予約の一覧（新しい順に最大20件）
 @app.get("/api/esthe/my-reservations")
 def api_my_esthe_reservations(request: Request):
     member_id = request.session.get("member_id")
@@ -2081,7 +2299,7 @@ def api_my_esthe_reservations(request: Request):
     } for r in rows]
     return {"status": "success", "reservations": reservations}
 
-# 📝 自分のエステ予約のキャンセル
+# 自分のエステ予約のキャンセル
 @app.post("/api/esthe/cancel")
 def api_cancel_esthe(request: Request, data: EstheCancelRequest):
     member_id = request.session.get("member_id")
@@ -2102,7 +2320,7 @@ def api_cancel_esthe(request: Request, data: EstheCancelRequest):
         return {"status": "error", "message": "この予約はキャンセルできません（開始済み、またはすでに取り消し済みです）。"}
     return {"status": "success", "message": "予約をキャンセルしました。"}
 
-# ログイン画面を表示するルーティングを追加
+# 会員ログイン画面。すでにログイン済みならマイページ(/portal)へ戻す。
 @app.get("/login", response_class=HTMLResponse)
 def get_login_page(request: Request):
     # すでにログイン済みならマイページへ自動転送
@@ -2110,14 +2328,14 @@ def get_login_page(request: Request):
         return RedirectResponse(url="/portal", status_code=303)
     return templates.TemplateResponse(request, "login.html", {})
 
-# portal ルートを修正（未ログイン時はログイン画面へ転送）
+# 会員のマイページ。未ログインならログイン画面へ飛ばす。
 @app.get("/portal", response_class=HTMLResponse)
 def get_user_portal(request: Request):
     if not request.session.get("member_id"):
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "portal.html", {})
 
-# 🆕 HISTORY ページ（RANKとHISTORYを統合した別HTML）へのルーティング
+# 利用履歴ページ。未ログインなら /portal へ戻す（そこからログイン画面に回される）。
 @app.get("/history", response_class=HTMLResponse)
 def get_history_page(request: Request):
     if not request.session.get("member_id"):
@@ -2125,28 +2343,33 @@ def get_history_page(request: Request):
     return templates.TemplateResponse(request, "history.html", {})
 
 @app.post("/api/register")
+# 会員登録API。入力チェック → 顔の特徴量の取り出し → 会員IDとQRトークンの発行 → QR画像をメールで送る → DBに保存、の順に進める。
+# 途中で失敗すると会員は作られない（メール送信に失敗したときも、DBには入らない）。
 def api_register(data: RegisterRequest):
-    # 🔍 実際に届いている中身を確認するデバッグ出力
+    # デバッグ用の出力。名前とメールアドレスがログに残るので、運用では消すこと。
     print(f"👉 受信した名前: {data.name}")
     print(f"👉 受信したメール: {data.email}")
     try:
+        # 全角で入力されたメールアドレスを半角に直し、前後の空白を取り除く。
         email = unicodedata.normalize("NFKC", data.email).strip()
         if not email.isascii() or "@" not in email:
             return {"status": "error", "message": "メールアドレスは半角英数字で入力してください。"}
 
-        # 🔒 パスワード強度チェック（8文字以上・大文字・小文字・数字・特殊文字）
+        # パスワード強度チェック（8文字以上・大文字・小文字・数字・特殊文字）
         pw_error = validate_password_strength(data.password)
         if pw_error:
             return {"status": "error", "message": pw_error}
 
-        # 🔒 【追加】パスワードのハッシュ化
+        # パスワードをハッシュ化する（平文のままDBに入れない）。
         hashed_password = get_password_hash(data.password)
 
+        # 画像は「data:image/jpeg;base64,xxxx」の形で届く。カンマより後ろを取り出してデコードし、OpenCVの画像にする。
         header, encoded = data.image.split(",", 1)
         image_bytes = base64.b64decode(encoded)
         np_arr = np.frombuffer(image_bytes, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
+        # 顔の特徴量を取り出す。リクエストのたびにモデルを読み込むので、登録には少し時間がかかる。
         from insightface.app import FaceAnalysis
         face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
         face_app.prepare(ctx_id=0, det_size=(640, 640))
@@ -2155,11 +2378,14 @@ def api_register(data: RegisterRequest):
         if len(faces) == 0:
             return {"status": "error", "message": "顔が検出されませんでした。もう一度撮影してください。"}
         
+        # 複数の顔が写っていたら先頭の1つを使う。特徴量はバイト列にして、DBの BLOB 列に保存する。
         face_embedding = faces[0].embedding.tobytes()
 
+        # 会員IDと、入館用QRに埋め込むトークンを乱数で作る。QRのトークンは推測されにくいように長めにしている。
         member_id = "mem_" + uuid.uuid4().hex[:8]
         qr_token = "token_" + uuid.uuid4().hex
 
+        # トークンをQRコードの画像(PNG)にして、メモリ上に作る。
         import qrcode
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
         qr.add_data(qr_token)
@@ -2171,6 +2397,7 @@ def api_register(data: RegisterRequest):
         img_io.seek(0)
 
         msg = MIMEMultipart()
+        # 登録完了のメールに、QR画像を添付して送る。
         msg['Subject'] = '【ジムセキュリティ】会員登録完了と専用QRコードのお知らせ'
         msg['From'] = SENDER_EMAIL
         msg['To'] = email
@@ -2186,11 +2413,12 @@ def api_register(data: RegisterRequest):
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, email, msg.as_string())
 
-        # 🛠️ 【修正】INSERT文に password (hashed_password) を追加
+        # メール送信まで成功してから会員を保存する（途中で失敗すれば会員は作られない）。パスワードはハッシュ化したものを入れる。
         execute_db_write(
             "INSERT INTO members (member_id, name, email, password, qr_token, face_embedding) VALUES (%s, %s, %s, %s, %s, %s)",
             (member_id, data.name, email, hashed_password, qr_token, face_embedding)
         )
+        # 会員が増えたので、顔キャッシュを破棄して、次の照合ですぐ読み直させる。
         member_cache.invalidate()
 
         return {"status": "success", "member_id": member_id}
@@ -2200,6 +2428,7 @@ def api_register(data: RegisterRequest):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+# エステ予約の画面。会員ログインが必要。
 @app.get("/esthe", response_class=HTMLResponse)
 def get_esthe_page(request: Request):
     if not request.session.get("member_id"):
@@ -2208,12 +2437,15 @@ def get_esthe_page(request: Request):
     return templates.TemplateResponse(request, "esthe.html", {})
 
 @app.get("/video")
+# カメラの映像をMJPEG（JPEG画像を連続で送る形式）で配信する。ブラウザの <img> に直接つなげて表示できる。
+# 0.04秒おき（約25コマ/秒）で、最新のフレームを送る。
 async def video_feed():
     async def generate_async_stream():
         while True:
             with render_lock:
                 frame_to_send = current_output_frame
             if frame_to_send is not None:
+                # 最新のフレームをJPEGに圧縮して送る。
                 ret, buffer = cv2.imencode('.jpg', frame_to_send, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
                 if ret:
                     yield (b'--frame\r\n'
@@ -2231,6 +2463,7 @@ async def video_feed():
         }
     )
 
+# 画面とリアルタイムにつなぐWebSocket。つながった直後に最新の状態を1回送り、その後の更新は ws_broadcast_loop が配信する。
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -2247,6 +2480,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in connected_websockets:
             connected_websockets.remove(websocket)
 
+# 待ち行列に溜まった更新データを取り出して、接続中のすべての画面へ0.1秒おきに配信する。送れなくなった接続は一覧から外す。
 async def ws_broadcast_loop():
     while True:
         try:
@@ -2263,12 +2497,15 @@ async def ws_broadcast_loop():
         await asyncio.sleep(0.1)
 
 # =========================================================================
-# 📊 会員有料度（貢献度）スコア関連のルーティング・API
+# 会員有料度（貢献度）スコア関連のルーティング・API
 # =========================================================================
 
+# 会員1人ぶんのスコアは、来館・マシン利用の実績から加点し、違反（マシンの超過、共連れ、エステの無断キャンセル・超過）で減点して出す。
 def calculate_member_score(conn, member_id):
     """会員1人あたりの有料度・貢献度スコア（0〜100点）および内訳を計算する（共連れ・超過の減点対応）"""
     cursor = conn.cursor(pymysql.cursors.Cursor)
+    # passing_logs の member_id は「名前 (会員ID)」の形なので、末尾が「(会員ID)」で終わるものを LIKE で探す。
+    # 会員IDの中の % や _ は LIKE の特殊文字なので、先にエスケープしておく。
     escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%({escaped})"
 
@@ -2294,7 +2531,7 @@ def calculate_member_score(conn, member_id):
     usages = cursor.fetchall()
     total_duration_sec = sum(u[0] or 0 for u in usages)
 
-    # 🔴 【追加・修正】マシン利用の超過回数を計算するロジック
+    # マシンごとの上限を超えて使った回数を数える（上限が0のマシンは対象外）。
     overtime_count = 0
     for duration, machine_key in usages:
         info = MACHINE_LIMITS.get(machine_key, {})
@@ -2320,19 +2557,23 @@ def calculate_member_score(conn, member_id):
     esthe_overtime_count = cursor.fetchone()[0] or 0
 
     # --- スコア計算 ---
+    # 来館点は1回5点で上限40点。利用点はマシンを10分(600秒)使うごとに5点で上限40点。
+    # 加点の合計は最大80点なので、ランクSになれるのは減点なしで加点を満点まで貯めたときだけ。
     visit_score = min(40, normal_visit_count * 5)
     usage_score = min(40, int((total_duration_sec / 600) * 5))
 
-    # 📝 【ペナルティ強化】エステの違反も減点対象に含める
+    # 減点の内訳（エステの違反も対象）:
     # - マシン超過: 1回 -10pt
     # - 共連れアラート: 1回 -20pt
     # - エステ無断キャンセル: 1回 -15pt
     # - エステ時間超過: 1回 -10pt
     penalty_points = (overtime_count * 10) + (alert_count * 20) + (esthe_noshow_count * 15) + (esthe_overtime_count * 10)
 
+    # 加点から減点を引いて、0〜100の範囲に収める。
     total_score = max(0, min(100, (visit_score + usage_score) - penalty_points))
 
     # ランク判定
+    # ランクは、80点以上=S、60点以上=A、40点以上=B、それ未満=C。
     if total_score >= 80:
         rank = "S"
     elif total_score >= 60:
@@ -2392,11 +2633,12 @@ def api_get_member_scores(request: Request):
     return {"status": "success", "scores": score_list}
 
 # =========================================================================
-# 👤 会員ポータル（portal.html）用：会員ログイン・マイページAPI
-#   管理者ログイン（session["admin_user"]）とは別に、session["member_id"] で会員を管理する。
+# 会員ポータル（portal.html）用：会員ログイン・マイページAPI
+# 管理者ログイン（session["admin_user"]）とは別に、session["member_id"] で会員を管理する。
 # =========================================================================
 @app.post("/api/member/login")
 def api_member_login(request: Request, data: MemberLoginRequest):
+    # メールアドレスを半角に直して照合する（登録のときと同じ整え方）。
     email = unicodedata.normalize("NFKC", data.email).strip()
     if not email or not data.password:
         return JSONResponse({"status": "error", "message": "メールアドレスとパスワードを入力してください。"}, status_code=400)
@@ -2413,6 +2655,7 @@ def api_member_login(request: Request, data: MemberLoginRequest):
     if member is None or not verify_password(data.password, member["password"]):
         return JSONResponse({"status": "error", "message": "メールアドレスまたはパスワードが違います。"}, status_code=400)
 
+    # ログイン成功。会員IDをセッション(Cookie)に入れる。以降のAPIは、これでログイン中の会員を判断する。
     request.session["member_id"] = member["member_id"]
     return {"status": "success"}
 
@@ -2464,16 +2707,18 @@ def api_member_me(request: Request):
         "next_esthe": nxt["start_time"].strftime("%Y-%m-%d %H:%M") if nxt else None,
     }
 
+# サーバーが起動したときに、画面への配信ループをバックグラウンドで走らせる。
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(ws_broadcast_loop())
 
+# 管理者のダッシュボード（トップページ）。管理者ログインが必要。開くと、カメラのモードを入口に戻す。
 @app.get("/", response_class=HTMLResponse)
 async def read_index(request: Request):
     if "admin_user" not in request.session:
         return RedirectResponse(url="/admin/login", status_code=303)
     
-    # 🌐 ページアクセス時にモードを自動切り替え
+    # ページアクセス時にモードを自動切り替え
     with mode_lock:
         global active_mode
         active_mode = "entrance"
@@ -2488,13 +2733,14 @@ def api_admin_login(request: Request, data: AdminAuthRequest):
     user = cursor.fetchone()
     conn.close()
 
-    # 🔒 取得したハッシュ化パスワードと入力されたパスワードを安全に検証
+    # 取得したハッシュ化パスワードと入力されたパスワードを安全に検証
     if user and verify_password(data.password, user["password"]):
         request.session["admin_user"] = data.username
         return {"status": "success"}
     else:
         return JSONResponse({"status": "error", "message": "IDまたはパスワードが違います"}, status_code=400)
 
+# 管理者のログアウト。session を全部消すので、同じブラウザの会員ログインも一緒に消える。
 @app.get("/admin/logout")
 async def admin_logout(request: Request):
     request.session.clear()
@@ -2506,6 +2752,8 @@ def get_admin_members_page(request: Request):
         return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "members.html", {})
 
+# 注意: この一覧APIと、すぐ下の削除API(DELETE)には、管理者ログインの確認が無い。
+# 他の /api/admin/ 系のAPIにはあるので、URLを知っていれば誰でも呼べてしまう状態になっている。
 @app.get("/api/admin/members")
 def api_get_members():
     conn = get_conn(dict_cursor=True)
@@ -2544,6 +2792,7 @@ def api_get_member_detail(member_id: str, request: Request):
 
     escaped = member_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%({escaped})"
+    # 警告のない入館だけを、来館回数として数える。
     visit_where = "direction = 'IN' AND is_alert = 0 AND member_id LIKE %s"
     cursor.execute(f"SELECT timestamp FROM passing_logs WHERE {visit_where} ORDER BY id DESC LIMIT 50", (pattern,))
     visits = [row["timestamp"] for row in cursor.fetchall()]
@@ -2566,6 +2815,7 @@ def api_get_member_detail(member_id: str, request: Request):
     u = cursor.fetchone()
     conn.close()
 
+    # いま利用中のマシンがあれば、メモリ上の状態から取り出して画面に出す。
     current = None
     for key, m_state in state.machine_states.items():
         if m_state.get("member_id") == member_id and m_state["user"] != "-":
@@ -2608,15 +2858,19 @@ def get_admin_logs_page(request: Request):
         return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "logs.html", {})
 
+# マシンログの member_id（会員IDか表示名）を、「名前 (会員ID)」の形に整える。会員が見つからなければそのまま返す。
 def _member_label(names, raw):
     if raw in names:
         return f"{names[raw]} ({raw})"
     return raw
 
+# 「名前 (会員ID)」から、末尾の括弧の中の会員IDを取り出す。この形でなければ None。
 def _member_id_from_label(label):
+    # 末尾の括弧の中身が会員ID。
     m = re.match(r"^.*\(([^()]+)\)$", label or "")
     return m.group(1) if m else None
 
+# 1人の会員の、来館回数・最後の来館・マシンの利用回数・合計の利用秒数をまとめて返す。会員がいなければ None。
 def _member_stats(cursor, member_id):
     if not member_id:
         return None
@@ -2634,10 +2888,12 @@ def _member_stats(cursor, member_id):
     return {"member_id": m["member_id"], "name": m["name"], "email": m["email"], "has_face": bool(m["has_face"]),
             "visit_count": v["c"], "last_visit": v["last"], "usage_count": u["c"], "total_usage_seconds": u["total"]}
 
+# 秒数を「3分20秒」「45秒」のような読みやすい文字列にする。
 def _fmt_seconds(sec):
     sec = int(round(sec or 0))
     return f"{sec // 60}分{sec % 60}秒" if sec >= 60 else f"{sec}秒"
 
+# ライブ映像の画面。管理者ログインが必要。
 @app.get("/live", response_class=HTMLResponse)
 async def read_live(request: Request):
     if "admin_user" not in request.session:
@@ -2655,12 +2911,12 @@ def api_get_logs(request: Request):
     cursor.execute("SELECT member_id, name FROM members")
     names = {row["member_id"]: row["name"] for row in cursor.fetchall()}
 
-    logs = []  # 🔴 【修正】ここで空のリストを初期化する必要があります！
+    logs = []
 
     cursor.execute("SELECT id, timestamp, direction, member_id, is_alert FROM passing_logs ORDER BY id DESC LIMIT 100")
     for r in cursor.fetchall():
         d = r["direction"]
-        # 📝 エステのログ（ESTHE_OK / ESTHE_NG）なら type を 'esthe' に分類する
+        # IN/OUT以外の種別はエステ関連のログとして分類する（表示用の番号は G=ゲート、E=エステ）。
         if d in ("IN", "OUT"):
             l_type = "gate"
             prefix = "G"
@@ -2681,9 +2937,11 @@ def api_get_logs(request: Request):
                      "member": _member_label(names, r["member_id"]),
                      "status": "overtime" if over else "normal", "duration": r["duration"]})
     conn.close()
+    # 通行ログとマシンのログを混ぜて、新しい順に並べ直し、100件に絞る。
     logs.sort(key=lambda x: x["timestamp"] or "", reverse=True)
     logs = logs[:100]
 
+    # いま利用中のマシンを、ログ一覧の先頭に「LIVE」として並べる。
     live = []
     for key, m in state.machine_states.items():
         if m["user"] != "-" and m["start_time"] is not None:
@@ -2705,6 +2963,7 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
     cursor = conn.cursor()
     fields, title, member_id = [], "", None
 
+    # ログの種類(kind)ごとに、詳細の項目を組み立てる。gate=入退館、machine=マシンの利用記録、active=いま利用中。
     if kind in ("gate", "machine"):
         try:
             log_id = int(ref)
@@ -2766,40 +3025,17 @@ def api_get_log_detail(kind: str, ref: str, request: Request):
         conn.close()
         return not_found
 
+    # 関係する会員がいれば、その会員の来館・利用の集計も添える。
     member = _member_stats(cursor, member_id)
     conn.close()
     return {"status": "success", "kind": kind, "title": title, "fields": fields, "member": member}
-
-@app.get("/admin/register", response_class=HTMLResponse)
-def get_admin_register_page(request: Request):
-    return templates.TemplateResponse(request, "admin_register.html", {})
-
-@app.post("/api/admin/register")
-def api_admin_register(data: AdminAuthRequest):
-    try:
-        # 🔒 パスワード強度チェック（8文字以上・大文字・小文字・数字・特殊文字）
-        pw_error = validate_password_strength(data.password)
-        if pw_error:
-            return {"status": "error", "message": pw_error}
-
-        hashed_password = get_password_hash(data.password) # 🔒 ハッシュ化
-        conn = get_conn()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO admins (username, password) VALUES (%s, %s)", (data.username, hashed_password))
-        conn.commit()
-        conn.close()
-        return {"status": "success"}
-    except pymysql.err.IntegrityError:
-        return {"status": "error", "message": "このIDはすでに使われています"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-    
 
 @app.get("/admin/login", response_class=HTMLResponse)
 def get_admin_login_page(request: Request):
     return templates.TemplateResponse(request, "admin_login.html", {})
 
+# 直接実行したときの起動処理。カメラ処理とコンソールのモード切り替えを別スレッドで動かしてから、Webサーバー(uvicorn)を起動する。
+# 127.0.0.1 で待ち受けるので、このPC以外からは開けない。
 if __name__ == "__main__":
     camera_thread = threading.Thread(target=camera_processing_loop, daemon=True)
     camera_thread.start()
