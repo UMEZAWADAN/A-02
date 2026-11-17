@@ -1918,8 +1918,10 @@ def camera_processing_loop():
                                 member_label = f"{name} ({member_id})"
                                 if state.leave_if_inside(member_id):
                                     state.register_pass("OUT", member_label, 0, note=f"顔認証による退館 (類似度 {erec['sim']:.2f})")
+                                    print(f"【退館検知-成功】 {member_label} が退館しました（類似度: {erec['sim']:.2f}）")
                             else:
                                 state.register_pass("OUT", "Unknown / Guest", 0, note="顔未識別での退館")
+                                print(f"【退館検知-成功】 {member_label} が退館しました（類似度: {erec['sim']:.2f}）")
 
                 # 保留にしていた通過を見直して、猶予が過ぎたものを確定させる。
                 for kind, suspect, tid_ in crossing_judge.poll(current_time, owned_by_tid):
