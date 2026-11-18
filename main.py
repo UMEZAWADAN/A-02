@@ -130,7 +130,7 @@ ROOM_FACE_THRESHOLD = 0.60    # ルームモードの1:N判定用。部屋のカ
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "chocozap123456@gmail.com")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")   # 🔒 コード内からパスワードを排除
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")   # コード内からパスワードを排除
 
 # 違反メール：マシンの利用時間が上限を超えた会員に、利用の終了時にメールで違反内容を知らせる
 VIOLATION_MAIL_ENABLED = True       # False にするとメールを送らない
@@ -255,7 +255,7 @@ def _ensure_database():
         finally:
             conn.close()
     except Exception as e:
-        print(f"⚠️ データベースの自動作成をスキップ: {e}")
+        print(f" データベースの自動作成をスキップ: {e}")
 
 # テーブルに列が無ければ追加する。古い版で作ったDBを、作り直さずに今の形へ移行するために使う。
 def _ensure_column(cursor, table, column, ddl):
@@ -375,11 +375,11 @@ def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
         finally:
             conn.close()
     except Exception as e:
-        print(f"⚠️ 違反メール：会員情報の取得に失敗: {e}")
+        print(f" 違反メール：会員情報の取得に失敗: {e}")
         return False
     # 会員が削除済み、またはメールアドレスが空なら送れない。
     if row is None or not row[1]:
-        print(f"⚠️ 違反メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
+        print(f" 違反メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
         return False
     name, email = row
 
@@ -409,7 +409,7 @@ def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, email, msg.as_string())
     except Exception as e:
-        print(f"⚠️ 違反メールの送信に失敗（{name} / {member_id}）: {e}")
+        print(f" 違反メールの送信に失敗（{name} / {member_id}）: {e}")
         return False
     print(f"📧 【違反メール送信】 {name}（{member_id}）宛：{machine_name} の時間超過（{_fmt_seconds(duration)} / 上限 {_fmt_seconds(limit)}）")
     return True
@@ -419,14 +419,14 @@ def notify_overtime_async(member_id, machine_key, start, end, duration):
     if not VIOLATION_MAIL_ENABLED:
         return
     if not member_id:
-        print("⚠️ 時間超過ですが会員IDが分からないため、違反メールは送りません")
+        print(" 時間超過ですが会員IDが分からないため、違反メールは送りません")
         return
     # 同じ会員に短い間隔で何通も送らないための確認。顔の識別が揺れて、同じ人の利用が何度も区切られても、メールは1通で済む。
     now = time.time()
     with _violation_mail_lock:
         last = _violation_mail_last.get(member_id)
         if last is not None and now - last < VIOLATION_MAIL_COOLDOWN:
-            print(f"ℹ️ 違反メールは直近に送信済みのためスキップ: {member_id}")
+            print(f" 違反メールは直近に送信済みのためスキップ: {member_id}")
             return
         _violation_mail_last[member_id] = now
 
@@ -449,11 +449,11 @@ def _send_notification_mail(member_id, subject, body):
         finally:
             conn.close()
     except Exception as e:
-        print(f"⚠️ 通知メール：会員情報の取得に失敗: {e}")
+        print(f" 通知メール：会員情報の取得に失敗: {e}")
         return False
 
     if row is None or not row[1]:
-        print(f"⚠️ 通知メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
+        print(f" 通知メールを送れません：会員 {member_id} のメールアドレスが見つかりません")
         return False
     name, email = row
 
@@ -473,9 +473,9 @@ def _send_notification_mail(member_id, subject, body):
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, email, msg.as_string())
     except Exception as e:
-        print(f"⚠️ 通知メールの送信に失敗（{name} / {member_id}）: {e}")
+        print(f" 通知メールの送信に失敗（{name} / {member_id}）: {e}")
         return False
-    print(f"📧 【通知メール送信成功】 {name}（{member_id}）宛：{subject}")
+    print(f" 【通知メール送信成功】 {name}（{member_id}）宛：{subject}")
     return True
 
 def notify_esthe_over_async(member_id, start_str, end_str):
@@ -535,7 +535,7 @@ def db_writer_worker():
             finally:
                 conn.close()
         except Exception as e:
-            print(f"⚠️ DB書き込みエラー: {e}")
+            print(f" DB書き込みエラー: {e}")
         finally:
             db_write_queue.task_done()
 
@@ -608,7 +608,7 @@ class SystemStateManager:
             finally:
                 conn.close()
         except Exception as e:
-            print(f"⚠️ 館内の会員の復元に失敗: {e}")
+            print(f" 館内の会員の復元に失敗: {e}")
             return
         # ログを古い順に再生して、IN なら館内に追加、OUT なら外す。最後に残った人が「いま館内にいる人」になる。
         for ts, direction, label, alert in rows:
@@ -744,7 +744,7 @@ class SystemStateManager:
                     self.last_member_embedding = np.frombuffer(member['face_embedding'], dtype=np.float32)
                 else:
                     self.last_member_embedding = None
-                print(f"🔓 【QR認証成功】 歓迎: {member['name']} (ID: {member['member_id']})")
+                print(f" 【QR認証成功】 歓迎: {member['name']} (ID: {member['member_id']})")
             else:
                 self.rejected_token = qr_data
                 self.rejected_time = current_time
@@ -755,13 +755,13 @@ class SystemStateManager:
                     and (current_time - self.last_qr_time) <= CO_TRAILING_WINDOW
                 )
                 if auth_still_valid:
-                    print(f"⚠️ 【QR読み取り無視】 有効な認証の直後に未登録の文字列を検出（認証は維持）: {qr_data!r}")
+                    print(f" 【QR読み取り無視】 有効な認証の直後に未登録の文字列を検出（認証は維持）: {qr_data!r}")
                     return
                 self.accepted_token = None
                 self.last_scanned_qr = "Invalid QR"
                 self.last_member_id = None
                 self.last_member_embedding = None
-                print(f"❌ 【QR認証失敗】 無効なトークンです: {qr_data!r} (長さ {len(qr_data)})")
+                print(f" 【QR認証失敗】 無効なトークンです: {qr_data!r} (長さ {len(qr_data)})")
 
             # 認証の成否にかかわらず時刻を更新し、前回の警告表示は消して、画面に最新の状態を送る。
             self.last_qr_time = current_time
@@ -807,7 +807,7 @@ class SystemStateManager:
                 float(m_state["duration"]), m_key)
             )
         except Exception as e:
-            print(f"⚠️ 占有ログの保存に失敗: {e}")
+            print(f" 占有ログの保存に失敗: {e}")
         # 上限を超えていたら、会員に違反メールを送る。
         if m_state["duration"] > MACHINE_LIMITS[m_key]["limit"]:
             notify_overtime_async(m_state.get("member_id"), m_key, start, end, m_state["duration"])
@@ -847,7 +847,7 @@ class SystemStateManager:
             for m_key, m_state in self.machine_states.items():
                 if m_state["user"] != "-" and m_state["last_seen"] is not None \
                         and (current_time - m_state["last_seen"]) > SEAT_RELEASE_GRACE:
-                    print(f"🪑 【利用終了】 {m_state['user']} / 占有 {m_state['duration']:.0f}秒")
+                    print(f" 【利用終了】 {m_state['user']} / 占有 {m_state['duration']:.0f}秒")
                     self._log_occupancy(m_key, m_state)
                     m_state.update({"user": "-", "duration": 0.0, "status": "free",
                                     "start_time": None, "last_seen": None, "member_id": None})
@@ -907,7 +907,7 @@ class SystemStateManager:
                 else:
                     esthe_status_str = "USING"
         except Exception as e:
-            print(f"⚠️ エステ状態の取得エラー: {e}")
+            print(f" エステ状態の取得エラー: {e}")
 
         return {
             "active_mode": current_active_mode,
@@ -978,7 +978,7 @@ class MemberFaceCache:
             finally:
                 conn.close()
         except Exception as e:
-            print(f"⚠️ 会員顔データの読み込みに失敗（前回のキャッシュを継続使用）: {e}")
+            print(f" 会員顔データの読み込みに失敗（前回のキャッシュを継続使用）: {e}")
             return
         ids, names, vecs, dim = [], [], [], None
         for r in rows:
@@ -1601,14 +1601,14 @@ def camera_processing_loop():
     yolo_model = YOLO("yolo11n.pt")
     room_model = YOLO(ROOM_MODEL_PATH)
     pose_model = YOLO(POSE_MODEL_PATH)
-    print("👤 顔認識モデルを読み込み中...")
+    print(" 顔認識モデルを読み込み中...")
     face_app = FaceAnalysis(allowed_modules=['detection', 'recognition'], providers=['CPUExecutionProvider'])
     face_app.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
 
     # カメラが開けるまで、3秒おきにやり直す。
     cap = open_camera()
     while not cap.isOpened():
-        print("❌ エラー: カメラを開けませんでした。3秒後に再試行します...")
+        print(" エラー: カメラを開けませんでした。3秒後に再試行します...")
         time.sleep(3)
         cap.release()
         cap = open_camera()
@@ -1655,12 +1655,12 @@ def camera_processing_loop():
             reason_note = f"共連れ検知 (Co-trailing): {suspect_member} のQR認証直後に未認証の人物(ID:{tid})が侵入しました"
             if not suspect.authed:
                 reason_note += "（QR所有者の顔認証は完了していませんでした）"
-            print(f"🚨 【共連れ検知】 主犯/手助け: {suspect_member} | 侵入者ID: {tid}")
+            print(f" 【共連れ検知】 主犯/手助け: {suspect_member} | 侵入者ID: {tid}")
             state.set_alert(True)
             state.register_pass("IN", f"Co-trailing by {suspect_member}", 1, note=reason_note)
             notify_cotrailing_async(suspect.member_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         else:
-            print(f"🚨 【未認証侵入】 QRなしでの通過を検知 (ID:{tid})")
+            print(f" 【未認証侵入】 QRなしでの通過を検知 (ID:{tid})")
             state.set_alert(True)
             state.register_pass("IN", "Unknown / No QR", 1, note="QRなし・単独での未認証通過")
             state.last_scanned_qr = "None"
@@ -1671,7 +1671,7 @@ def camera_processing_loop():
     auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}
     
     print("\n====================================================")
-    print(" 📹 カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
+    print("  カメラ処理ループが稼働しました（椅子検知＋座り判定モード）。")
     print("====================================================\n")
 
     while cap.isOpened():
@@ -1686,13 +1686,13 @@ def camera_processing_loop():
             if mode == "register":
                 if cap.isOpened():
                     cap.release()
-                    print("📷 [registerモード] ブラウザでの顔撮影のため、Python側のカメラを一時解放しました")
+                    print(" [registerモード] ブラウザでの顔撮影のため、Python側のカメラを一時解放しました")
                 time.sleep(0.5)
                 continue
 
             # registerモードから他のモードに戻ったとき、カメラが閉じられていれば再オープンする
             if not cap.isOpened():
-                print("📷 カメラを再接続します...")
+                print(" カメラを再接続します...")
                 cap = open_camera()
                 while not cap.isOpened():
                     time.sleep(1)
@@ -1962,11 +1962,11 @@ def camera_processing_loop():
                                 if res:
                                     _exec(conn, "UPDATE esthe_reservations SET status = 'in_progress', used_at = NOW() WHERE id = %s", (res["id"],))
                                     conn.commit()
-                                    print(f"✨ 【エステ入室成功】 {m_name} (ID: {m_id}) が入室しました")
+                                    print(f" 【エステ入室成功】 {m_name} (ID: {m_id}) が入室しました")
                                 else:
-                                    print(f"⚠️ 【エステ入室拒否】 有効な予約時間帯ではありません: {m_name}")
+                                    print(f" 【エステ入室拒否】 有効な予約時間帯ではありません: {m_name}")
                         except Exception as e:
-                            print(f"⚠️ エステ入室処理エラー: {e}")
+                            print(f" エステ入室処理エラー: {e}")
                         finally:
                             conn.close()
 
@@ -1994,7 +1994,7 @@ def camera_processing_loop():
                         for r in overdue_res:
                             _exec(conn, "UPDATE esthe_reservations SET status = 'overtime' WHERE id = %s", (r["id"],))
                             conn.commit()
-                            print(f"🚨 【エステ超過検知】 会員 {r['name']} ({r['member_id']}) が終了時刻 ({r['end_time']}) を過ぎてもエステ室に留まっています。")
+                            print(f" 【エステ超過検知】 会員 {r['name']} ({r['member_id']}) が終了時刻 ({r['end_time']}) を過ぎてもエステ室に留まっています。")
                             
                             start_str = r["start_time"].strftime("%Y-%m-%d %H:%M:%S")
                             end_str = r["end_time"].strftime("%Y-%m-%d %H:%M:%S")
@@ -2002,7 +2002,7 @@ def camera_processing_loop():
                             
                         conn.close()
                     except Exception as e:
-                        print(f"⚠️ エステ超過チェックエラー: {e}")
+                        print(f" エステ超過チェックエラー: {e}")
 
                 # (3) エステ室から人がいなくなったら自動で「完了(completed)」にする処理
                 # 最後に人が映っていた時刻。初回だけ変数が無いので、ここで今の時刻にしておく。
@@ -2028,10 +2028,10 @@ def camera_processing_loop():
                             for r in in_progress_res:
                                 _exec(conn, "UPDATE esthe_reservations SET status = 'completed' WHERE id = %s", (r["id"],))
                                 conn.commit()
-                                print(f"✨ 【エステ自動退出】 室内から人がいなくなったため、予約ID {r['id']} (会員ID: {r['member_id']}) を完了にしました。")
+                                print(f" 【エステ自動退出】 室内から人がいなくなったため、予約ID {r['id']} (会員ID: {r['member_id']}) を完了にしました。")
                             conn.close()
                         except Exception as e:
-                            print(f"⚠️ エステ自動完了処理エラー: {e}")
+                            print(f" エステ自動完了処理エラー: {e}")
             
             else:
                 # ＝ トレーニングルームモード（椅子検知・座り判定・マシン利用時間計測） ＝
@@ -2130,7 +2130,7 @@ def camera_processing_loop():
 
         except Exception as e:
             if time.time() - last_err_log > 5.0:
-                print(f"⚠️ カメラ処理でエラー（処理は継続します）: {e}")
+                print(f" カメラ処理でエラー（処理は継続します）: {e}")
                 traceback.print_exc()
                 last_err_log = time.time()
             time.sleep(0.1)
@@ -2145,13 +2145,13 @@ def console_switcher_thread():
             with mode_lock:
                 if active_mode == "entrance":
                     active_mode = "room"
-                    print("\n🔄 【モード切替】 ➔ 【トレーニングルームモード】")
+                    print("\n 【モード切替】 ➔ 【トレーニングルームモード】")
                 elif active_mode == "room":
                     active_mode = "esthe"
-                    print("\n🔄 【モード切替】 ➔ 【エステ室・予約照合モード】")
+                    print("\n 【モード切替】 ➔ 【エステ室・予約照合モード】")
                 else:
                     active_mode = "entrance"
-                    print("\n🔄 【モード切替】 ➔ 【入口ゲートモード】")
+                    print("\n 【モード切替】 ➔ 【入口ゲートモード】")
             state.push_update()
         except Exception:
             break
@@ -2219,7 +2219,7 @@ def mark_esthe_noshows(conn, member_id=None):
         # 他の処理が先に更新していたら（rowcount が 0）、メールを重ねて送らない
         cur.execute("UPDATE esthe_reservations SET status = 'no_show' WHERE id = %s AND status = 'reserved'", (rid,))
         if cur.rowcount:
-            print(f"🚨 【エステ無断キャンセル検知】 会員ID {mid} / 予約開始 {start}")
+            print(f" 【エステ無断キャンセル検知】 会員ID {mid} / 予約開始 {start}")
             notify_esthe_noshow_async(mid, str(start))
     conn.commit()
 
@@ -2274,7 +2274,7 @@ def api_reserve_esthe(request: Request, data: EstheReserveRequest):
             conn.close()
         return {"status": "success", "message": f"{start_dt.strftime('%m/%d ' + ESTHE_TIME_FMT)} のエステを予約しました。"}
     except Exception as e:
-        print(f"⚠️ エステ予約エラー: {e}")
+        print(f" エステ予約エラー: {e}")
         return {"status": "error", "message": "予約に失敗しました。時間をおいてもう一度お試しください。"}
 
 # 自分のエステ予約の一覧（新しい順に最大20件）
@@ -2349,8 +2349,8 @@ def get_history_page(request: Request):
 # 途中で失敗すると会員は作られない（メール送信に失敗したときも、DBには入らない）。
 def api_register(data: RegisterRequest):
     # デバッグ用の出力。名前とメールアドレスがログに残るので、運用では消すこと。
-    print(f"👉 受信した名前: {data.name}")
-    print(f"👉 受信したメール: {data.email}")
+    print(f" 受信した名前: {data.name}")
+    print(f" 受信したメール: {data.email}")
     try:
         # 全角で入力されたメールアドレスを半角に直し、前後の空白を取り除く。
         email = unicodedata.normalize("NFKC", data.email).strip()
@@ -2495,7 +2495,7 @@ async def ws_broadcast_loop():
                         if ws in connected_websockets:
                             connected_websockets.remove(ws)
         except Exception as e:
-            print(f"⚠️ WebSocket配信でエラー（配信は継続します）: {e}")
+            print(f" WebSocket配信でエラー（配信は継続します）: {e}")
         await asyncio.sleep(0.1)
 
 # =========================================================================
@@ -2592,8 +2592,8 @@ def calculate_member_score(conn, member_id):
         "alert_count": alert_count,
         "total_duration_fmt": _fmt_seconds(total_duration_sec),
         "overtime_count": overtime_count,
-        "esthe_noshow_count": esthe_noshow_count, # 📝 画面表示用に返す場合に追加
-        "esthe_overtime_count": esthe_overtime_count, # 📝 追加
+        "esthe_noshow_count": esthe_noshow_count, #  画面表示用に返す場合に追加
+        "esthe_overtime_count": esthe_overtime_count, #  追加
         "penalty_points": penalty_points
     }
 
@@ -2729,7 +2729,7 @@ async def read_index(request: Request):
 
 @app.post("/api/admin/login")
 def api_admin_login(request: Request, data: AdminAuthRequest):
-    conn = get_conn(dict_cursor=True) # 🔑 カラム名でアクセスできるようにする
+    conn = get_conn(dict_cursor=True) #  カラム名でアクセスできるようにする
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM admins WHERE username = %s", (data.username,))
     user = cursor.fetchone()
@@ -3045,6 +3045,6 @@ if __name__ == "__main__":
     switcher_thread = threading.Thread(target=console_switcher_thread, daemon=True)
     switcher_thread.start()
     
-    print("\n🚀 サーバーを椅子検知・座り判定モードで起動しました！")
-    print("👉 ブラウザで http://localhost:8000/ を開いてダッシュボードを確認してください。")
+    print("\n サーバーを椅子検知・座り判定モードで起動しました！")
+    print(" ブラウザで http://localhost:8000/ を開いてダッシュボードを確認してください。")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
