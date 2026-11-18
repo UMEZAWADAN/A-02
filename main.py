@@ -411,7 +411,7 @@ def _send_overtime_mail(member_id, machine_key, start_str, end_str, duration):
     except Exception as e:
         print(f" 違反メールの送信に失敗（{name} / {member_id}）: {e}")
         return False
-    print(f"📧 【違反メール送信】 {name}（{member_id}）宛：{machine_name} の時間超過（{_fmt_seconds(duration)} / 上限 {_fmt_seconds(limit)}）")
+    print(f" 【違反メール送信】 {name}（{member_id}）宛：{machine_name} の時間超過（{_fmt_seconds(duration)} / 上限 {_fmt_seconds(limit)}）")
     return True
 
 def notify_overtime_async(member_id, machine_key, start, end, duration):
