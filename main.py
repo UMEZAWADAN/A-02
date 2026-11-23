@@ -1979,6 +1979,15 @@ def camera_processing_loop():
                                     _exec(conn, "UPDATE esthe_reservations SET status = 'in_progress', used_at = NOW() WHERE id = %s", (res["id"],))
                                     conn.commit()
                                     print(f" 【エステ入室成功】 {m_name} (ID: {m_id}) が入室しました")
+
+                                    execute_db_write(
+                                        "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (%s, %s, %s, %s, %s)",
+                                        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ESTHE_IN", f"{m_name} ({m_id})", 0, "エステ室QR入室"),
+                                    )
+                                    with state._lock:
+                                        state.last_scanned_qr = f"ESTHE IN: {m_name} ({m_id})"
+                                    state.push_update()
+
                                 else:
                                     print(f" 【エステ入室拒否】 有効な予約時間帯ではありません: {m_name}")
                         except Exception as e:
@@ -2015,6 +2024,7 @@ def camera_processing_loop():
                             _exec(conn, "UPDATE esthe_reservations SET status = 'in_progress', used_at = NOW() WHERE id = %s AND status = 'reserved'", (h["next_id"],))
                             conn.commit()
                             print(f" 【エステ連続予約】 会員ID {h['member_id']} の予約ID {h['cur_id']} → {h['next_id']} へ引き継ぎました（QR再認証なし）")
+                            state.push_update()
 
                         # 無断キャンセル（予約したのに来ていない）も、スコア画面を開かなくてもここで検知する
                         mark_esthe_noshows(conn)
@@ -2031,6 +2041,12 @@ def camera_processing_loop():
                             _exec(conn, "UPDATE esthe_reservations SET status = 'overtime' WHERE id = %s", (r["id"],))
                             conn.commit()
                             print(f" 【エステ超過検知】 会員 {r['name']} ({r['member_id']}) が終了時刻 ({r['end_time']}) を過ぎてもエステ室に留まっています。")
+
+                            execute_db_write(
+                            "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (%s, %s, %s, %s, %s)",
+                            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ESTHE_OVER", f"{r['name']} ({r['member_id']})", 1, f"終了時刻({r['end_time']})超過"),
+                            )
+                            state.push_update()
                             
                             start_str = r["start_time"].strftime("%Y-%m-%d %H:%M:%S")
                             end_str = r["end_time"].strftime("%Y-%m-%d %H:%M:%S")
@@ -2065,6 +2081,12 @@ def camera_processing_loop():
                                 _exec(conn, "UPDATE esthe_reservations SET status = 'completed' WHERE id = %s", (r["id"],))
                                 conn.commit()
                                 print(f" 【エステ自動退出】 室内から人がいなくなったため、予約ID {r['id']} (会員ID: {r['member_id']}) を完了にしました。")
+                                execute_db_write(
+                                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (%s, %s, %s, %s, %s)",
+                                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ESTHE_OUT", r["member_id"], 0, "無人検知による自動完了"),
+                            )
+                            state.push_update()
+                            
                             conn.close()
                         except Exception as e:
                             print(f" エステ自動完了処理エラー: {e}")

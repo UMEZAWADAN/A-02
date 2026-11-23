@@ -687,9 +687,16 @@
                 tbody.innerHTML = '';
                 data.logs.forEach(log => {
                     const tr = document.createElement('tr');
-                    const dirBadge = log.direction === 'IN' 
-                        ? '<span class="badge badge-in">IN</span>' 
-                        : '<span class="badge badge-out">OUT</span>';
+                    let dirBadge = '<span class="badge badge-out">OUT</span>';
+                    if (log.direction === 'IN') {
+                        dirBadge = '<span class="badge badge-in">IN</span>';
+                    } else if (log.direction === 'ESTHE_IN') {
+                        dirBadge = '<span class="badge badge-machine-using">ESTHE IN</span>';
+                    } else if (log.direction === 'ESTHE_OVER') {
+                        dirBadge = '<span class="badge badge-alert">ESTHE OVER</span>';
+                    } else if (log.direction === 'ESTHE_OUT') {
+                        dirBadge = '<span class="badge badge-out">ESTHE OUT</span>';
+                    }
                     const alertBadge = log.is_alert === 1 
                         ? '<span class="badge badge-alert">ALERT</span>' 
                         : '<span class="badge badge-normal">NORMAL</span>';
