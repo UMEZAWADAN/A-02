@@ -81,11 +81,10 @@ templates = Jinja2Templates(directory="templates")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 注意: ここで読み込んだ SECRET_KEY は使われておらず、下の add_middleware には固定の文字列が直接渡されている。
-# 本番で使うなら secret_key=SECRET_KEY に差し替えること（固定のままだとCookieの署名が誰でも作れてしまう）。
+# SECRET_KEY は .env で必ず設定すること（未設定だと固定の予備の値になり、Cookieの署名が誰でも作れてしまう）。
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key")
 # ログイン状態をCookieに保存するための設定。管理者は session["admin_user"]、会員は session["member_id"] で区別する。
-app.add_middleware(SessionMiddleware, secret_key="your-secret-key-here")
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
 # 以下の2つは現在どこからも使われていない（以前の実装の名残）。消しても動作は変わらない。
 clients = []
@@ -1668,6 +1667,7 @@ def camera_processing_loop():
     # sit_log は今のところ参照されていない。
     sit_log = {"key": None, "time": 0.0}
     entrance_sessions = []    # 入口：QRを読んだ会員ごとの認証セッション
+    esthe_qr_seen = {}        # エステ：QR文字列 → 最後に処理した時刻（同じQRを毎フレーム処理しないため）
     auth_banner = {"text": "", "color": (200, 200, 200), "until": 0.0}
     
     print("\n====================================================")
@@ -1717,6 +1717,11 @@ def camera_processing_loop():
             if mode != "entrance":
                 entrance_sessions = []
                 crossing_judge.reset()
+
+            # エステ以外のモードのあいだは、エステ用の時刻を現在に合わせ続ける。
+            # （エステモードに戻った直後に、古い時刻のせいで「無人が続いた」と誤判定して予約を完了にしないため）
+            if mode != "esthe":
+                esthe_last_person_time = current_time
 
             if mode == "entrance":
                 # 入口: まずQRコードを探す。見つかったら緑の枠で囲む。
@@ -1919,9 +1924,14 @@ def camera_processing_loop():
                                 if state.leave_if_inside(member_id):
                                     state.register_pass("OUT", member_label, 0, note=f"顔認証による退館 (類似度 {erec['sim']:.2f})")
                                     print(f"【退館検知-成功】 {member_label} が退館しました（類似度: {erec['sim']:.2f}）")
+                                else:
+                                    # 顔は識別できたが、館内にいる記録が無い会員。履歴を残すため、注記つきで退館を記録する。
+                                    state.register_pass("OUT", member_label, 0,
+                                                        note=f"顔認証で識別（類似度 {erec['sim']:.2f}）／館内の入館記録なし")
+                                    print(f"【退館検知-入館記録なし】 {member_label} の退館を記録しました（類似度: {erec['sim']:.2f}）")
                             else:
                                 state.register_pass("OUT", "Unknown / Guest", 0, note="顔未識別での退館")
-                                print(f"【退館検知-成功】 {member_label} が退館しました（類似度: {erec['sim']:.2f}）")
+                                print("【退館検知】 顔を識別できない人物が退館しました（Unknown / Guest）")
 
                 # 保留にしていた通過を見直して、猶予が過ぎたものを確定させる。
                 for kind, suspect, tid_ in crossing_judge.poll(current_time, owned_by_tid):
@@ -1943,7 +1953,13 @@ def camera_processing_loop():
                     for i in range(4):
                         cv2.line(frame, tuple(pts[i]), tuple(pts[(i + 1) % 4]), (255, 0, 255), THICK)
                     # エステ室のQRは、有効な予約があればその場で「利用中」にする（顔の照合はしない）。
-                    if qr_data and state.should_process_qr(qr_data, current_time):
+                    # 入口用の should_process_qr は使わない（エステ側では認証済みトークンを記録しないため、毎フレーム判定されてしまう）。
+                    # 同じQRは DUPLICATE_QR_WINDOW 秒以内なら再処理しない。
+                    if qr_data and (current_time - esthe_qr_seen.get(qr_data, 0.0)) > DUPLICATE_QR_WINDOW:
+                        esthe_qr_seen[qr_data] = current_time
+                        if len(esthe_qr_seen) > 50:
+                            for k in [k for k, t in esthe_qr_seen.items() if current_time - t > DUPLICATE_QR_WINDOW]:
+                                del esthe_qr_seen[k]
                         conn = get_conn(dict_cursor=True)
                         try:
                             # QRの文字列から会員を特定する。
@@ -1980,6 +1996,26 @@ def camera_processing_loop():
                     last_esthe_check = current_time
                     try:
                         conn = get_conn(dict_cursor=True)
+                        # 連続予約の引き継ぎ：利用中の枠が終わったとき、同じ会員が直後の枠も予約していれば、
+                        # QRをかざし直さなくても、そのまま次の枠を「利用中」にする（前の枠は完了にする）。
+                        # 超過判定より先に行うので、連続予約の切れ目で超過メールが送られることはない。
+                        handover_rows = _exec(conn, """
+                            SELECT a.id AS cur_id, b.id AS next_id, a.member_id
+                            FROM esthe_reservations a
+                            JOIN esthe_reservations b
+                              ON b.member_id = a.member_id
+                             AND b.start_time = a.end_time
+                             AND b.status = 'reserved'
+                            WHERE a.status = 'in_progress'
+                              AND a.end_time <= NOW()
+                              AND b.end_time > NOW()
+                        """).fetchall()
+                        for h in handover_rows:
+                            _exec(conn, "UPDATE esthe_reservations SET status = 'completed' WHERE id = %s AND status = 'in_progress'", (h["cur_id"],))
+                            _exec(conn, "UPDATE esthe_reservations SET status = 'in_progress', used_at = NOW() WHERE id = %s AND status = 'reserved'", (h["next_id"],))
+                            conn.commit()
+                            print(f" 【エステ連続予約】 会員ID {h['member_id']} の予約ID {h['cur_id']} → {h['next_id']} へ引き継ぎました（QR再認証なし）")
+
                         # 無断キャンセル（予約したのに来ていない）も、スコア画面を開かなくてもここで検知する
                         mark_esthe_noshows(conn)
 
@@ -2754,10 +2790,11 @@ def get_admin_members_page(request: Request):
         return RedirectResponse(url="/admin/login", status_code=303)
     return templates.TemplateResponse(request, "members.html", {})
 
-# 注意: この一覧APIと、すぐ下の削除API(DELETE)には、管理者ログインの確認が無い。
-# 他の /api/admin/ 系のAPIにはあるので、URLを知っていれば誰でも呼べてしまう状態になっている。
+# 会員一覧API・削除APIも、他の /api/admin/ 系と同じく管理者ログインが必要。
 @app.get("/api/admin/members")
-def api_get_members():
+def api_get_members(request: Request):
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
     conn = get_conn(dict_cursor=True)
     cursor = conn.cursor()
     cursor.execute("SELECT member_id, name, email, qr_token FROM members")
@@ -2766,7 +2803,9 @@ def api_get_members():
     return {"members": members}
 
 @app.delete("/api/admin/members/{member_id}")
-def api_delete_member(member_id: str):
+def api_delete_member(member_id: str, request: Request):
+    if "admin_user" not in request.session:
+        return JSONResponse({"status": "error", "message": "ログインが必要です。"}, status_code=401)
     try:
         conn = get_conn()
         cursor = conn.cursor()
