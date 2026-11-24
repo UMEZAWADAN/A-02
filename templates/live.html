@@ -684,61 +684,60 @@
 
             if (data.logs && data.logs.length > 0) {
                 const tbody = document.getElementById('logs-table-body');
-            if (data.active_mode === 'room') {
-                // トレーニングルームモード中はマシン利用状況をログ欄に表示（passing_logsの入館ログで上書きしない）
-                if (data.machines && data.machines.length > 0) {
+                if (data.active_mode === 'room') {
+                    // トレーニングルームモード中はマシン利用状況をログ欄に表示（passing_logsの入館ログで上書きしない）
+                    if (data.machines && data.machines.length > 0) {
+                        tbody.innerHTML = '';
+                        data.machines.forEach(machine => {
+                            const tr = document.createElement('tr');
+                            let statusBadge = '<span class="badge badge-machine-free">FREE</span>';
+                            if (machine.status === 'using') {
+                                statusBadge = '<span class="badge badge-machine-using">USING</span>';
+                            } else if (machine.status === 'overtime') {
+                                statusBadge = '<span class="badge badge-machine-overtime">OVERTIME</span>';
+                            }
+
+                            tr.innerHTML = `
+                                <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${machine.name} (${machine.duration}s)</td>
+                                <td><span class="badge badge-machine-using">MACHINE</span></td>
+                                <td style="font-family: monospace; font-weight: 700;">${machine.user}</td>
+                                <td>${statusBadge}</td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+                    }
+                } else {
                     tbody.innerHTML = '';
-                    data.machines.forEach(machine => {
+                    data.logs.forEach(log => {
                         const tr = document.createElement('tr');
-                        let dirBadge = '<span class="badge badge-machine-free">FREE</span>';
-                        let statusBadge = '<span class="badge badge-normal">STANDBY</span>';
-                        if (machine.status === 'using') {
-                            dirBadge = '<span class="badge badge-machine-using">USING</span>';
-                            statusBadge = '<span class="badge badge-normal">NORMAL</span>';
-                        } else if (machine.status === 'overtime') {
-                            dirBadge = '<span class="badge badge-machine-overtime">OVERTIME</span>';
-                            statusBadge = '<span class="badge badge-alert">ALERT</span>';
+                        let dirBadge = '<span class="badge badge-out">OUT</span>';
+                        if (log.direction === 'IN') {
+                            dirBadge = '<span class="badge badge-in">IN</span>';
+                        } else if (log.direction === 'ESTHE_IN') {
+                            dirBadge = '<span class="badge badge-machine-using">ESTHE IN</span>';
+                        } else if (log.direction === 'ESTHE_OVER') {
+                            dirBadge = '<span class="badge badge-alert">ESTHE OVER</span>';
+                        } else if (log.direction === 'ESTHE_NOSHOW') {
+                            dirBadge = '<span class="badge badge-alert">ESTHE NOSHOW</span>';
+                        } else if (log.direction === 'ESTHE_OUT') {
+                            dirBadge = '<span class="badge badge-out">ESTHE OUT</span>';
                         }
+                        const alertBadge = log.is_alert === 1
+                            ? '<span class="badge badge-alert">ALERT</span>'
+                            : '<span class="badge badge-normal">NORMAL</span>';
 
                         tr.innerHTML = `
-                            <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${machine.name} (${machine.duration}s)</td>
+                            <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${log.timestamp}</td>
                             <td>${dirBadge}</td>
-                            <td style="font-family: monospace; font-weight: 700;">${machine.user}</td>
-                            <td>${statusBadge}</td>
+                            <td style="font-family: monospace; font-weight: 700;">${log.member_id}</td>
+                            <td>${alertBadge}</td>
                         `;
                         tbody.appendChild(tr);
                     });
                 }
-            } else if (data.logs && data.logs.length > 0) {
-                tbody.innerHTML = '';
-                data.logs.forEach(log => {
-                    const tr = document.createElement('tr');
-                    let dirBadge = '<span class="badge badge-out">OUT</span>';
-                    if (log.direction === 'IN') {
-                        dirBadge = '<span class="badge badge-in">IN</span>';
-                    } else if (log.direction === 'ESTHE_IN') {
-                        dirBadge = '<span class="badge badge-machine-using">ESTHE IN</span>';
-                    } else if (log.direction === 'ESTHE_OVER') {
-                        dirBadge = '<span class="badge badge-alert">ESTHE OVER</span>';
-                    } else if (log.direction === 'ESTHE_OUT') {
-                        dirBadge = '<span class="badge badge-out">ESTHE OUT</span>';
-                    }
-                    const alertBadge = log.is_alert === 1 
-                        ? '<span class="badge badge-alert">ALERT</span>' 
-                        : '<span class="badge badge-normal">NORMAL</span>';
-
-                    tr.innerHTML = `
-                        <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${log.timestamp}</td>
-                        <td>${dirBadge}</td>
-                        <td style="font-family: monospace; font-weight: 700;">${log.member_id}</td>
-                        <td>${alertBadge}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
             }
         }
-    }
-
+       
         connectWebSocket();
     </script>
 </body>

@@ -2271,21 +2271,38 @@ ESTHE_EMPTY_COMPLETE_SECONDS = 15.0   # 無人がこの秒数続いたら自動�
 
 def mark_esthe_noshows(conn, member_id=None):
     """予約したのに入室しないまま、枠の終了時刻を過ぎた予約を no_show にして、メールを送る。member_id を渡すとその会員だけが対象。"""
-    where = "status = 'reserved' AND end_time < NOW()"
+    where = "r.status = 'reserved' AND r.end_time < NOW()"
     params = ()
     if member_id is not None:
-        where += " AND member_id = %s"
+        where += " AND r.member_id = %s"
         params = (member_id,)
     cur = conn.cursor(pymysql.cursors.Cursor)
-    cur.execute(f"SELECT id, member_id, start_time FROM esthe_reservations WHERE {where}", params)
+    cur.execute(
+        f"""
+        SELECT r.id, r.member_id, r.start_time, m.name
+        FROM esthe_reservations r
+        LEFT JOIN members m ON r.member_id = m.member_id
+        WHERE {where}
+        """,
+        params,
+    )
     targets = cur.fetchall()
-    for rid, mid, start in targets:
+    updated_any = False
+    for rid, mid, start, m_name in targets:
         # 他の処理が先に更新していたら（rowcount が 0）、メールを重ねて送らない
         cur.execute("UPDATE esthe_reservations SET status = 'no_show' WHERE id = %s AND status = 'reserved'", (rid,))
         if cur.rowcount:
+            updated_any = True
+            member_label = f"{m_name} ({mid})" if m_name else mid
             print(f" 【エステ無断キャンセル検知】 会員ID {mid} / 予約開始 {start}")
+            execute_db_write(
+                "INSERT INTO passing_logs (timestamp, direction, member_id, is_alert, note) VALUES (%s, %s, %s, %s, %s)",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ESTHE_NOSHOW", member_label, 1, f"予約開始({start})無断キャンセル"),
+            )
             notify_esthe_noshow_async(mid, str(start))
     conn.commit()
+    if updated_any:
+        state.push_update()
 
 # 会員ログインが必要なAPIで、未ログインのときに返す共通の応答（HTTP 401）。
 def _login_required_json():
