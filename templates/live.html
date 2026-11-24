@@ -684,6 +684,32 @@
 
             if (data.logs && data.logs.length > 0) {
                 const tbody = document.getElementById('logs-table-body');
+            if (data.active_mode === 'room') {
+                // トレーニングルームモード中はマシン利用状況をログ欄に表示（passing_logsの入館ログで上書きしない）
+                if (data.machines && data.machines.length > 0) {
+                    tbody.innerHTML = '';
+                    data.machines.forEach(machine => {
+                        const tr = document.createElement('tr');
+                        let dirBadge = '<span class="badge badge-machine-free">FREE</span>';
+                        let statusBadge = '<span class="badge badge-normal">STANDBY</span>';
+                        if (machine.status === 'using') {
+                            dirBadge = '<span class="badge badge-machine-using">USING</span>';
+                            statusBadge = '<span class="badge badge-normal">NORMAL</span>';
+                        } else if (machine.status === 'overtime') {
+                            dirBadge = '<span class="badge badge-machine-overtime">OVERTIME</span>';
+                            statusBadge = '<span class="badge badge-alert">ALERT</span>';
+                        }
+
+                        tr.innerHTML = `
+                            <td style="color: var(--text-muted); font-family: monospace; font-size: 0.85rem;">${machine.name} (${machine.duration}s)</td>
+                            <td>${dirBadge}</td>
+                            <td style="font-family: monospace; font-weight: 700;">${machine.user}</td>
+                            <td>${statusBadge}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+            } else if (data.logs && data.logs.length > 0) {
                 tbody.innerHTML = '';
                 data.logs.forEach(log => {
                     const tr = document.createElement('tr');
@@ -711,6 +737,7 @@
                 });
             }
         }
+    }
 
         connectWebSocket();
     </script>

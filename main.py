@@ -2092,6 +2092,8 @@ def camera_processing_loop():
                             print(f" エステ自動完了処理エラー: {e}")
             
             else:
+                if "room_push_time" not in locals():
+                    room_push_time = 0.0
                 # ＝ トレーニングルームモード（椅子検知・座り判定・マシン利用時間計測） ＝
                 put_text(frame, "MODE: [ROOM (Seat & Machine Monitor)]", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
 
@@ -2180,6 +2182,10 @@ def camera_processing_loop():
 
                 # アイドル状態のマシン（誰も使っていない状態が続いたもの）を解放する
                 state.release_idle_machines(current_time)
+
+                if (current_time - room_push_time) >= ROOM_PUSH_INTERVAL:
+                    room_push_time = current_time
+                    state.push_update()
 
             with render_lock:
                 current_output_frame = frame.copy()
