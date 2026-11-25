@@ -190,6 +190,9 @@ CLOTHES_RECHECK_SECONDS = 1.5     # 服装で推定した本人の服が、入�
 
 RECENT_ENTRY_TTL = 900.0      # 入口で記録した服装情報を、服装による補助判定の候補に残す秒数（15分）
 
+# エステ室のQR入室に「入口で正規に入館済み」を必須にするか。False にすると、入館記録がなくても予約があれば入室できる（単体テスト用）。
+ESTHE_REQUIRE_INSIDE = True
+
 def put_text(img, text, org, font, fs, color, th=2, hud=True):
     """cv2.putText と同じ引数。hud=True なら位置・文字サイズ・太さを解像度に合わせて拡大する。
     人ボックスに付けるラベルなど、実座標を渡す場合は hud=False にする。"""
@@ -625,6 +628,15 @@ class SystemStateManager:
         with self._lock:
             self.inside_members[member_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    def inside_ids(self):
+        """いま館内にいる会員IDの集合（QR＋顔で正規に入館して、まだ退館していない人）。"""
+        with self._lock:
+            return set(self.inside_members.keys())
+
+    def is_inside(self, member_id):
+        with self._lock:
+            return member_id in self.inside_members
+
     def leave_if_inside(self, member_id):
         """館内にいる会員なら退館扱いにして True。入館記録がなければ False。"""
         with self._lock:
@@ -648,7 +660,8 @@ class SystemStateManager:
             self.clothes_diag = "off"
             return None, None
         with self._lock:
-            candidates = [e for e in self.recent_entries if current_time - e["time"] <= RECENT_ENTRY_TTL]
+            candidates = [e for e in self.recent_entries
+                          if current_time - e["time"] <= RECENT_ENTRY_TTL and e["member_id"] in self.inside_members]
             if not candidates:
                 self.clothes_diag = "no clothes record"
                 return None, None
@@ -1148,6 +1161,16 @@ def identify_face_1n(embedding, member_ids, member_names, member_matrix):
     sims = member_matrix @ (fe / fn)
     idx = int(np.argmax(sims))
     return member_ids[idx], member_names[idx], float(sims[idx])
+
+def restrict_to_inside(member_ids, member_names, member_matrix, inside):
+    """顔の照合候補を、館内にいる会員だけに絞る。入口で正規に入館していない人は、ルームで会員として識別されない。
+    該当者がいなければ matrix=None を返す（identify_face_1n は None を返す）。"""
+    if member_matrix is None or not inside:
+        return [], [], None
+    keep = [i for i, mid in enumerate(member_ids) if mid in inside]
+    if not keep:
+        return [], [], None
+    return [member_ids[i] for i in keep], [member_names[i] for i in keep], member_matrix[keep]
 
 # 人の体の下半分が、椅子の枠とどれだけ重なっているか（0〜1）。座っていれば下半身が椅子と重なる。
 # 椅子が複数あれば、いちばん重なっているものの値を使う。
@@ -1964,6 +1987,10 @@ def camera_processing_loop():
                         try:
                             # QRの文字列から会員を特定する。
                             member = _exec(conn, "SELECT member_id, name FROM members WHERE qr_token = %s", (qr_data,)).fetchone()
+                            # 入口で正規に入館していない会員は、QRが正しくてもエステ室に入室できない。
+                            if member and ESTHE_REQUIRE_INSIDE and not state.is_inside(member["member_id"]):
+                                print(f" 【エステ入室拒否】 入口での入館記録がありません: {member['name']} ({member['member_id']})")
+                                member = None
                             if member:
                                 m_id = member["member_id"]
                                 m_name = member["name"]
@@ -2145,6 +2172,9 @@ def camera_processing_loop():
                         fcy = (face.bbox[1] + face.bbox[3]) / 2
                         if p_box[0] <= fcx <= p_box[2] and p_box[1] <= fcy <= p_box[3]:
                             member_ids, member_names, member_matrix = member_cache.get()
+                            # 入口で正規に入館した（館内にいる）会員だけを候補にする。
+                            member_ids, member_names, member_matrix = restrict_to_inside(
+                                member_ids, member_names, member_matrix, state.inside_ids())
                             ident = identify_face_1n(face.embedding, member_ids, member_names, member_matrix)
                             if ident is not None and ident[2] > ROOM_FACE_THRESHOLD:
                                 recognized_id, recognized_name, _ = ident

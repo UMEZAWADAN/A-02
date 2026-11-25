@@ -24,7 +24,7 @@
             background-color: var(--bg-color);
             color: var(--text-main);
             margin: 0;
-            padding-top: 160px;
+            padding-top: 190px;
             padding-bottom: 0;
             padding-left: 20px;
             padding-right: 20px;
@@ -50,34 +50,64 @@
             align-items: center;
         }
 
+        /* ロゴ（案C：ミニマル・テック） */
         .header-brand h1 {
-            font-size: 2.4rem;
-            font-weight: 900;
-            text-transform: uppercase;
             margin: 0 0 12px 0;
-            letter-spacing: 0.08em;
+            font-size: inherit;
+            font-weight: normal;
             text-align: center;
-            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
-            color: transparent;
-            -webkit-text-stroke: 1.5px var(--text-main);
         }
-        
-        .header-brand h1 span {
-            background: var(--accent-lime);
-            padding: 0 10px;
-            color: #000;
-            -webkit-text-stroke: 0px transparent;
-            border-radius: 2px;
-            display: inline-block;
-        }
-
-        .header-brand h1 a {
-            color: inherit;
+        .logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 14px;
+            padding: 8px 18px;
+            border: 2px solid var(--text-main);
+            background: rgba(255, 255, 255, 0.6);
+            color: var(--text-main);
             text-decoration: none;
-            transition: color 0.3s ease;
+            white-space: nowrap;
+            text-transform: uppercase;
+            font-family: ui-monospace, Menlo, Consolas, "SFMono-Regular", monospace;
+            transition: background-color 0.2s ease;
         }
-        .header-brand h1 a:hover {
-            color: var(--accent-lime);
+        .logo-sq {
+            width: 14px;
+            height: 14px;
+            box-sizing: border-box;
+            background: var(--accent-lime);
+            border: 2px solid var(--text-main);
+            flex-shrink: 0;
+            transition: background-color 0.2s ease;
+        }
+        .logo-name,
+        .logo-slash,
+        .logo-sub {
+            font-size: 1.4rem;
+            letter-spacing: 0.22em;
+            margin-right: -0.22em;
+        }
+        .logo-name  { font-weight: 500; }
+        .logo-slash { color: var(--accent-lime-dark); }
+        .logo-sub   { color: var(--text-muted); font-weight: 400; }
+        .logo:hover { background: var(--accent-lime); }
+        .logo:hover .logo-sq { background: var(--text-main); }
+        .logo:hover .logo-slash,
+        .logo:hover .logo-sub { color: var(--text-main); }
+
+        .logo-lg { padding: 14px 28px; gap: 20px; }
+        .logo-lg .logo-sq { width: 20px; height: 20px; }
+        .logo-lg .logo-name,
+        .logo-lg .logo-slash,
+        .logo-lg .logo-sub { font-size: 2.2rem; }
+
+        @media (max-width: 600px) {
+            .logo { gap: 10px; padding: 6px 12px; }
+            .logo-name, .logo-slash, .logo-sub { font-size: 0.95rem; letter-spacing: 0.14em; margin-right: -0.14em; }
+            .logo-sq { width: 10px; height: 10px; }
+            .logo-lg { padding: 10px 16px; gap: 12px; }
+            .logo-lg .logo-sq { width: 12px; height: 12px; }
+            .logo-lg .logo-name, .logo-lg .logo-slash, .logo-lg .logo-sub { font-size: 1.1rem; }
         }
 
         .nav-container {
@@ -345,27 +375,10 @@
             border-bottom-color: var(--danger-color);
         }
 
-        .footer-wordmark {
-            display: block;
-            max-width: 380px;
-            margin: 28px auto 12px auto;
-            text-decoration: none;
-        }
-        .footer-wordmark svg {
-            display: block;
-            width: 100%;
-            height: auto;
-        }
-        .footer-wordmark text {
-            font-family: Impact, -apple-system, BlinkMacSystemFont, sans-serif;
-            font-weight: 900;
-            fill: transparent;
-            stroke: var(--text-main);
-            stroke-width: 3;
-            transition: fill 0.3s ease;
-        }
-        .footer-wordmark:hover text {
-            fill: var(--accent-lime);
+        .footer-logo {
+            display: flex;
+            justify-content: center;
+            margin: 28px 0 16px 0;
         }
 
         .footer-bottom {
@@ -395,7 +408,14 @@
 
     <header class="site-header">
         <div class="header-brand">
-            <h1><a href="/" class="brand-link" aria-label="CHOCOZAP SECURITY ホームへ">CHOCOZAP <span>SECURITY</span></a></h1>
+            <h1>
+                <a href="/" class="logo" aria-label="CHOCOZAP SECURITY">
+                    <span class="logo-sq" aria-hidden="true"></span>
+                    <span class="logo-name">CHOCOZAP</span>
+                    <span class="logo-slash" aria-hidden="true">/</span>
+                    <span class="logo-sub">SECURITY</span>
+                </a>
+            </h1>
         </div>
         <nav class="nav-container">
             <a href="/" class="nav-btn">HOME</a>
@@ -536,11 +556,14 @@
                 <a href="/admin/logout" class="logout">LOGOUT</a>
             </nav>
 
-            <a class="footer-wordmark" href="/" aria-label="CHOCOZAP SECURITY">
-                <svg viewBox="0 0 1000 118" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
-                    <text x="0" y="112" font-size="130" textLength="1000" lengthAdjust="spacingAndGlyphs">CHOCOZAP SECURITY</text>
-                </svg>
-            </a>
+            <div class="footer-logo">
+                <a href="/" class="logo" aria-label="CHOCOZAP SECURITY">
+                    <span class="logo-sq" aria-hidden="true"></span>
+                    <span class="logo-name">CHOCOZAP</span>
+                    <span class="logo-slash" aria-hidden="true">/</span>
+                    <span class="logo-sub">SECURITY</span>
+                </a>
+            </div>
 
             <div class="footer-bottom">
                 <div>&copy; 2026 CHOCOZAP SECURITY</div>
